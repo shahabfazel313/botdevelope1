@@ -383,6 +383,18 @@ def set_order_customer_secret(order_id: int, secret: str | None):
 def get_order(order_id: int):
     return db_execute("SELECT * FROM orders WHERE id=?", (order_id,), fetchone=True)
 
+def user_has_delivered_order(user_id: int) -> bool:
+    row = db_execute(
+        """
+        SELECT 1 FROM orders
+        WHERE user_id=? AND status IN ('DELIVERED','COMPLETED')
+        LIMIT 1
+        """,
+        (user_id,),
+        fetchone=True,
+    )
+    return bool(row)
+
 def list_cart_orders(user_id: int):
     return db_execute("""
         SELECT * FROM orders
@@ -413,7 +425,7 @@ def get_user_stats(user_id: int):
     # در حال انجام: پس از تایید پرداخت تا قبل از تحویل
     inprog = db_execute("""
         SELECT COUNT(*) AS c FROM orders
-        WHERE user_id=? AND status IN ('PENDING_CONFIRM','APPROVED','IN_PROGRESS','READY_TO_DELIVER')
+        WHERE user_id=? AND status IN ('PENDING_CONFIRM','PENDING_PLAN','APPROVED','IN_PROGRESS','READY_TO_DELIVER')
     """, (user_id,), fetchone=True)["c"]
     done = db_execute("""
         SELECT COUNT(*) AS c FROM orders
@@ -432,7 +444,7 @@ def list_orders_by_category(user_id: int, category: str, limit: int = 10, offset
     where = "user_id=?"
     params = [user_id]
     if category == "inprog":
-        where += " AND status IN ('PENDING_CONFIRM','APPROVED','IN_PROGRESS','READY_TO_DELIVER')"
+        where += " AND status IN ('PENDING_CONFIRM','PENDING_PLAN','APPROVED','IN_PROGRESS','READY_TO_DELIVER')"
     elif category == "done":
         where += " AND status IN ('DELIVERED','COMPLETED')"
     elif category == "all":
@@ -448,7 +460,7 @@ def count_orders_by_category(user_id: int, category: str):
     where = "user_id=?"
     params = [user_id]
     if category == "inprog":
-        where += " AND status IN ('PENDING_CONFIRM','APPROVED','IN_PROGRESS','READY_TO_DELIVER')"
+        where += " AND status IN ('PENDING_CONFIRM','PENDING_PLAN','APPROVED','IN_PROGRESS','READY_TO_DELIVER')"
     elif category == "done":
         where += " AND status IN ('DELIVERED','COMPLETED')"
     elif category == "all":
@@ -479,6 +491,8 @@ def set_user_phone_verified(user_id: int, phone: str):
 ORDER_STATUS_LABELS: dict[str, str] = {
     "AWAITING_PAYMENT": "در انتظار پرداخت",
     "PENDING_CONFIRM": "در انتظار تایید پرداخت",
+    "PENDING_PLAN": "در انتظار تایید طرح",
+    "PLAN_CONFIRMED": "طرح تایید شد",
     "APPROVED": "پرداخت تایید شد",
     "IN_PROGRESS": "در حال انجام",
     "READY_TO_DELIVER": "آماده تحویل",
@@ -493,6 +507,7 @@ PAYMENT_TYPE_LABELS: dict[str, str] = {
     "CARD": "پرداخت کارت",
     "WALLET": "کیف پول",
     "MIXED": "ترکیبی",
+    "FIRST_PLAN": "طرح خرید اول",
 }
 
 

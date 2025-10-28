@@ -3,7 +3,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from . import router
-from .helpers import _notify_admins
+from .helpers import _notify_admins, _order_title
 from ..config import ADMIN_IDS, CARD_NAME, CARD_NUMBER, CURRENCY
 from ..db import (
     change_wallet,
@@ -16,9 +16,11 @@ from ..db import (
     set_order_status,
     set_order_wallet_reserved,
     set_order_wallet_used,
+    user_has_delivered_order,
 )
 from ..keyboards import (
     ik_card_receipt_prompt,
+    ik_plan_review,
     ik_receipt_review,
     ik_wallet_confirm,
     reply_main,
@@ -292,6 +294,115 @@ async def cb_wallet_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.clear()
     notice = f"👛 پرداخت کیف پول — سفارش #{order_id} توسط {mention(callback.from_user)}"
+    if comment:
+        notice += f"\n\n📝 توضیح مشتری:\n{comment}"
+    await _notify_admins(callback.bot, notice)
+
+
+@router.callback_query(F.data.startswith("cart:payplan:"))
+async def cb_cart_payplan(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await _require_contact_verification(callback, state):
+        return
+    order_id = int(callback.data.split(":")[2])
+    order = get_order(order_id)
+    if not order or order["user_id"] != callback.from_user.id or order["status"] != "AWAITING_PAYMENT":
+        await callback.answer("سفارش نامعتبر یا منقضی است.", show_alert=True)
+        return
+    if order.get("service_category") != "AI":
+        await callback.answer("این طرح فقط برای سفارش‌های بخش هوش مصنوعی در دسترس است.", show_alert=True)
+        return
+    if user_has_delivered_order(callback.from_user.id):
+        await callback.answer("شما قبلاً از این طرح استفاده کرده‌اید.", show_alert=True)
+        await callback.message.answer("⚠️ شما قبلاً سفارش تحویل‌شده دارید و امکان استفاده مجدد از طرح خرید اول وجود ندارد.")
+        return
+    set_order_payment_type(order_id, "FIRST_PLAN")
+    await state.update_data(plan_for=order_id, plan_comment="")
+    await state.set_state(CheckoutStates.wait_plan_comment)
+    await callback.message.answer(
+        "✨ طرح خرید اول فعال شد.\n"
+        "اگر توضیحاتی برای سفارش خود دارید بنویسید. در صورت نداشتن توضیح عبارت «بدون توضیح» را ارسال کنید."
+    )
+    await callback.answer()
+
+
+@router.message(CheckoutStates.wait_plan_comment)
+async def on_plan_comment(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    order_id = data.get("plan_for")
+    order = get_order(int(order_id)) if order_id else None
+    if not order or order["user_id"] != message.from_user.id:
+        await message.answer("سفارش یافت نشد یا معتبر نیست.", reply_markup=reply_main())
+        await state.clear()
+        return
+    if not message.text:
+        await message.answer("لطفاً توضیحات خود را به‌صورت متن ارسال کنید یا عبارت «بدون توضیح» را وارد کنید.")
+        return
+    text = (message.text or "").strip()
+    if text.lower() in {"بدون توضیح", "بدون توضیحات", "ندارم", "-", "تمام"}:
+        comment = ""
+    else:
+        comment = text
+    await state.update_data(plan_comment=comment)
+    preview_lines = [
+        f"✨ طرح خرید اول — سفارش #{order_id}",
+        "درخواست شما آماده ارسال برای تایید است.",
+    ]
+    if comment:
+        preview_lines.append("📝 توضیحات شما:\n" + comment)
+    else:
+        preview_lines.append("📝 توضیحات شما: —")
+    preview_lines.append("برای ادامه یکی از گزینه‌های زیر را انتخاب کنید.")
+    await message.answer("\n\n".join(preview_lines), reply_markup=ik_plan_review(int(order_id)))
+    await state.set_state(CheckoutStates.wait_plan_confirm)
+
+
+@router.callback_query(F.data.startswith("cart:plan:edit:"))
+async def cb_plan_edit(callback: CallbackQuery, state: FSMContext) -> None:
+    order_id = int(callback.data.split(":")[3])
+    data = await state.get_data()
+    current = data.get("plan_for")
+    if not current or int(current) != order_id:
+        await callback.answer("برای ویرایش ابتدا طرح را دوباره ثبت کنید.", show_alert=True)
+        return
+    await state.set_state(CheckoutStates.wait_plan_comment)
+    await callback.message.answer("توضیح جدید خود را ارسال کنید. برای حذف توضیح عبارت «بدون توضیح» را بنویسید.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("cart:plan:confirm:"))
+async def cb_plan_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    order_id = int(callback.data.split(":")[3])
+    data = await state.get_data()
+    current = data.get("plan_for")
+    if not current or int(current) != order_id:
+        await callback.answer("طرح خرید اول برای این سفارش فعال نیست.", show_alert=True)
+        return
+    order = get_order(order_id)
+    if not order or order["user_id"] != callback.from_user.id or order["status"] != "AWAITING_PAYMENT":
+        await callback.answer("سفارش یافت نشد یا منقضی شده است.", show_alert=True)
+        await state.clear()
+        return
+    if order.get("service_category") != "AI":
+        await callback.answer("طرح خرید اول برای این سفارش فعال نیست.", show_alert=True)
+        await state.clear()
+        return
+    comment = data.get("plan_comment") or ""
+    set_order_customer_message(order_id, comment)
+    set_order_status(order_id, "PENDING_PLAN")
+    set_order_payment_type(order_id, "FIRST_PLAN")
+    await callback.message.answer(
+        f"✅ درخواست طرح خرید اول برای سفارش #{order_id} ثبت شد.\nوضعیت: «در انتظار تایید طرح»",
+        reply_markup=reply_main(),
+    )
+    await callback.answer()
+    await state.clear()
+
+    title = _order_title(order.get("service_category", ""), order.get("service_code", ""), order.get("notes"))
+    notice = (
+        f"✨ طرح خرید اول — سفارش #{order_id}\n"
+        f"مشتری: {mention(callback.from_user)} (@{callback.from_user.username or '—'})\n"
+        f"محصول: {title}"
+    )
     if comment:
         notice += f"\n\n📝 توضیح مشتری:\n{comment}"
     await _notify_admins(callback.bot, notice)

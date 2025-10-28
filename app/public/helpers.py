@@ -21,6 +21,8 @@ def _status_fa(code: str) -> str:
     return {
         "AWAITING_PAYMENT": "در انتظار پرداخت",
         "PENDING_CONFIRM": "در انتظار تایید پرداخت",
+        "PENDING_PLAN": "در انتظار تایید طرح",
+        "PLAN_CONFIRMED": "طرح تایید شد",
         "APPROVED": "پرداخت تایید شد",
         "IN_PROGRESS": "در حال انجام",
         "READY_TO_DELIVER": "آماده تحویل",
@@ -75,6 +77,7 @@ def _fmt_order_for_user(order: dict[str, Any]) -> str:
         "CARD": "کارت",
         "WALLET": "کیف پول",
         "MIXED": "ترکیبی",
+        "FIRST_PLAN": "طرح خرید اول",
     }.get(payment_type, "—")
     account_mode = (order.get("account_mode") or "").upper()
     account_mode_label = {

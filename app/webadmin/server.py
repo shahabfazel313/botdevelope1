@@ -478,8 +478,13 @@ def create_admin_app() -> FastAPI:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="وضعیت نامعتبر است")
 
             original_status = order.get("status")
+            plan_approval = status_value == "PLAN_CONFIRMED"
+            if plan_approval and original_status != "PENDING_PLAN":
+                _flash(request, "امکان تایید طرح وجود ندارد (وضعیت فعلی مجاز نیست).", "error")
+                return RedirectResponse(request.url_for("order_detail", order_id=order_id), status.HTTP_303_SEE_OTHER)
+
             new_status = status_value
-            if new_status == "APPROVED":
+            if new_status in {"APPROVED", "PLAN_CONFIRMED"}:
                 new_status = "IN_PROGRESS"
             if new_status not in ORDER_STATUS_LABELS:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="وضعیت نامعتبر است")
@@ -497,7 +502,16 @@ def create_admin_app() -> FastAPI:
 
             updated = get_order(order_id)
             if status_changed and updated and user_id:
-                if new_status == "REJECTED":
+                if plan_approval:
+                    product_title = updated.get("plan_title") or updated.get("service_code") or order_title
+                    await _notify_user(
+                        user_id,
+                        (
+                            f"✅ طرح خرید اول سفارش شما تایید شد و در حال انجام می‌باشد.\n"
+                            f"سفارش #{order_id} - {product_title}"
+                        ),
+                    )
+                elif new_status == "REJECTED":
                     reserved_amount = int(updated.get("wallet_reserved_amount") or 0)
                     used_amount = int(updated.get("wallet_used_amount") or 0)
                     total_amount = int(updated.get("amount_total") or 0)
@@ -566,6 +580,23 @@ def create_admin_app() -> FastAPI:
                 _flash(request, "نوع پرداخت سفارش به‌روزرسانی شد.")
             else:
                 _flash(request, "تغییری در نوع پرداخت ایجاد نشد.", "info")
+
+        elif action == "plan_confirm":
+            if order.get("status") != "PENDING_PLAN":
+                _flash(request, "امکان تایید طرح وجود ندارد (وضعیت نامعتبر است).", "error")
+            else:
+                set_order_status(order_id, "IN_PROGRESS")
+                updated = get_order(order_id)
+                if user_id:
+                    product_title = updated.get("plan_title") or updated.get("service_code") or order_title
+                    await _notify_user(
+                        user_id,
+                        (
+                            f"✅ طرح خرید اول سفارش شما تایید شد و در حال انجام می‌باشد.\n"
+                            f"سفارش #{order_id} - {product_title}"
+                        ),
+                    )
+                _flash(request, "طرح خرید اول تایید و سفارش در حال انجام شد.")
 
         elif action == "manager_note":
             text = (manager_note or "").strip()

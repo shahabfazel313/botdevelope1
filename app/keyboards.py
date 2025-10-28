@@ -182,13 +182,16 @@ def ik_other_services_actions() -> InlineKeyboardMarkup:
 
 # ====== Cart / Checkout ======
 
-def ik_cart_actions(order_id: int) -> InlineKeyboardMarkup:
-    rows = [
+def ik_cart_actions(order_id: int, *, enable_plan: bool = False) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="💳 پرداخت کارت‌به‌کارت", callback_data=f"cart:paycard:{order_id}")],
         [InlineKeyboardButton(text="👛 پرداخت با کیف پول", callback_data=f"cart:paywallet:{order_id}")],
-        [InlineKeyboardButton(text="🔄 پرداخت ترکیبی", callback_data=f"cart:paymix:{order_id}")],
-        [InlineKeyboardButton(text="❌ لغو سفارش", callback_data=f"cart:cancel:{order_id}")],
     ]
+    mix_row = [InlineKeyboardButton(text="🔄 پرداخت ترکیبی", callback_data=f"cart:paymix:{order_id}")]
+    if enable_plan:
+        mix_row.append(InlineKeyboardButton(text="✨ طرح خرید اول", callback_data=f"cart:payplan:{order_id}"))
+    rows.append(mix_row)
+    rows.append([InlineKeyboardButton(text="❌ لغو سفارش", callback_data=f"cart:cancel:{order_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -209,6 +212,15 @@ def ik_receipt_review(order_id: int) -> InlineKeyboardMarkup:
 def ik_wallet_confirm(order_id: int) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="✅ تایید پرداخت", callback_data=f"cart:wallet:confirm:{order_id}")],
+        [InlineKeyboardButton(text="❌ لغو سفارش", callback_data=f"cart:cancel:{order_id}")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def ik_plan_review(order_id: int) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="✅ ارسال برای تایید", callback_data=f"cart:plan:confirm:{order_id}")],
+        [InlineKeyboardButton(text="✏️ ویرایش توضیح", callback_data=f"cart:plan:edit:{order_id}")],
         [InlineKeyboardButton(text="❌ لغو سفارش", callback_data=f"cart:cancel:{order_id}")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
