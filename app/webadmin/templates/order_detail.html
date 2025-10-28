@@ -119,6 +119,14 @@
         <button type="submit" class="btn-primary">اعمال نوع پرداخت</button>
     </form>
 
+    {% if order.status == 'PENDING_PLAN' %}
+    <form method="post" action="{{ url_for('update_order', order_id=order.id) }}" class="form-grid">
+        <input type="hidden" name="action" value="plan_confirm">
+        <p class="span warning">این سفارش در انتظار تایید طرح خرید اول است.</p>
+        <button type="submit" class="btn-primary">تایید طرح خرید اول</button>
+    </form>
+    {% endif %}
+
     <form method="post" action="{{ url_for('update_order', order_id=order.id) }}" class="form-grid">
         <input type="hidden" name="action" value="manager_note">
         <label class="span">پیام مدیر برای مشتری
