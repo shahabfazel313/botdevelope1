@@ -11,6 +11,7 @@ from . import services  # noqa: F401
 from . import verification  # noqa: F401
 from . import cart  # noqa: F401
 from . import history  # noqa: F401
+from . import profile  # noqa: F401
 from . import channel_gate  # noqa: F401
 
 from ..middlewares import BlockedUserMiddleware
