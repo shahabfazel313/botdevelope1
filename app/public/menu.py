@@ -71,7 +71,8 @@ async def on_reply_cart(message: Message, state: FSMContext) -> None:
             f"باقیمانده برای پرداخت کارت: <b>{remaining} {CURRENCY}</b>\n"
             f"وضعیت: <b>{_status_fa(order['status'])}</b>{ttl}"
         )
-        await message.answer(text, reply_markup=ik_cart_actions(order["id"]))
+        enable_plan = order.get("service_category") == "AI"
+        await message.answer(text, reply_markup=ik_cart_actions(order["id"], enable_plan=enable_plan))
 
 
 @router.message(F.text == REPLY_BTN_PROFILE)

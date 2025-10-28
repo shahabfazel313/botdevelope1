@@ -492,6 +492,7 @@ ORDER_STATUS_LABELS: dict[str, str] = {
     "AWAITING_PAYMENT": "در انتظار پرداخت",
     "PENDING_CONFIRM": "در انتظار تایید پرداخت",
     "PENDING_PLAN": "در انتظار تایید طرح",
+    "PLAN_CONFIRMED": "طرح تایید شد",
     "APPROVED": "پرداخت تایید شد",
     "IN_PROGRESS": "در حال انجام",
     "READY_TO_DELIVER": "آماده تحویل",

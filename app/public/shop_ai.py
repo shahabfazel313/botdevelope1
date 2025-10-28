@@ -214,7 +214,7 @@ async def on_ai_team_email(message: Message, state: FSMContext) -> None:
     await message.answer(
         f"✅ سفارش #{order_id} ایجاد شد و به «🧺 سبد خرید» اضافه شد.\n"
         f"برای ادامه، روش پرداخت را انتخاب کنید:",
-        reply_markup=ik_cart_actions(order_id),
+        reply_markup=ik_cart_actions(order_id, enable_plan=True),
     )
     await state.clear()
 
@@ -278,7 +278,7 @@ async def cb_ai_team_mode_pre_buy(callback: CallbackQuery, state: FSMContext) ->
     await callback.message.answer(
         f"✅ سفارش #{order_id} ایجاد شد و به «🧺 سبد خرید» اضافه شد.\n"
         f"برای ادامه، روش پرداخت را انتخاب کنید:",
-        reply_markup=ik_cart_actions(order_id),
+        reply_markup=ik_cart_actions(order_id, enable_plan=True),
     )
     await callback.answer()
 
@@ -348,7 +348,7 @@ async def on_ai_plus_password(message: Message, state: FSMContext) -> None:
     await message.answer(
         f"✅ سفارش #{order_id} ایجاد شد و به «🧺 سبد خرید» اضافه شد.\n"
         f"برای ادامه، روش پرداخت را انتخاب کنید:",
-        reply_markup=ik_cart_actions(order_id),
+        reply_markup=ik_cart_actions(order_id, enable_plan=True),
     )
     await state.clear()
 
@@ -412,7 +412,7 @@ async def cb_ai_plus_mode_pre_buy(callback: CallbackQuery, state: FSMContext) ->
     await callback.message.answer(
         f"✅ سفارش #{order_id} ایجاد شد و به «🧺 سبد خرید» اضافه شد.\n"
         f"برای ادامه، روش پرداخت را انتخاب کنید:",
-        reply_markup=ik_cart_actions(order_id),
+        reply_markup=ik_cart_actions(order_id, enable_plan=True),
     )
     await callback.answer()
 
@@ -460,7 +460,7 @@ async def cb_ai_google_mode_pre_buy(callback: CallbackQuery, state: FSMContext) 
     await callback.message.answer(
         f"✅ سفارش #{order_id} ایجاد شد و به «🧺 سبد خرید» اضافه شد.\n"
         f"برای ادامه، روش پرداخت را انتخاب کنید:",
-        reply_markup=ik_cart_actions(order_id),
+        reply_markup=ik_cart_actions(order_id, enable_plan=True),
     )
     await callback.answer()
 

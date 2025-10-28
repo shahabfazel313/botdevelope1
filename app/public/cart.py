@@ -308,6 +308,9 @@ async def cb_cart_payplan(callback: CallbackQuery, state: FSMContext) -> None:
     if not order or order["user_id"] != callback.from_user.id or order["status"] != "AWAITING_PAYMENT":
         await callback.answer("سفارش نامعتبر یا منقضی است.", show_alert=True)
         return
+    if order.get("service_category") != "AI":
+        await callback.answer("این طرح فقط برای سفارش‌های بخش هوش مصنوعی در دسترس است.", show_alert=True)
+        return
     if user_has_delivered_order(callback.from_user.id):
         await callback.answer("شما قبلاً از این طرح استفاده کرده‌اید.", show_alert=True)
         await callback.message.answer("⚠️ شما قبلاً سفارش تحویل‌شده دارید و امکان استفاده مجدد از طرح خرید اول وجود ندارد.")
@@ -377,6 +380,10 @@ async def cb_plan_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     order = get_order(order_id)
     if not order or order["user_id"] != callback.from_user.id or order["status"] != "AWAITING_PAYMENT":
         await callback.answer("سفارش یافت نشد یا منقضی شده است.", show_alert=True)
+        await state.clear()
+        return
+    if order.get("service_category") != "AI":
+        await callback.answer("طرح خرید اول برای این سفارش فعال نیست.", show_alert=True)
         await state.clear()
         return
     comment = data.get("plan_comment") or ""
