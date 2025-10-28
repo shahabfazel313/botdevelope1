@@ -164,6 +164,7 @@ def init_db():
             ("users", "contact_shared_at", "TEXT"),
             ("users", "is_blocked", "INTEGER DEFAULT 0"),
             ("service_messages", "updated_at", "TEXT"),
+            ("coupons", "is_active", "INTEGER DEFAULT 1"),
         ]
         for t, c, typ in add_cols:
             if _table_exists(con, t) and not _col_exists(con, t, c):
@@ -242,6 +243,7 @@ def init_db():
                 amount INTEGER NOT NULL,
                 usage_limit INTEGER NOT NULL,
                 used_count INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
                 expires_at TEXT,
                 created_at TEXT,
                 updated_at TEXT
@@ -501,10 +503,10 @@ def create_coupon(code: str, amount: int, usage_limit: int, expires_at: str | No
         raise ValueError("Coupon code cannot be empty")
     return db_execute(
         """
-        INSERT INTO coupons(code, amount, usage_limit, used_count, expires_at, created_at, updated_at)
-        VALUES(?,?,?,?,?,?,?)
+        INSERT INTO coupons(code, amount, usage_limit, used_count, expires_at, created_at, updated_at, is_active)
+        VALUES(?,?,?,?,?,?,?,?)
         """,
-        (normalized, int(amount), int(usage_limit), 0, expires_at, now, now),
+        (normalized, int(amount), int(usage_limit), 0, expires_at, now, now, 1),
         return_lastrowid=True,
     )
 
@@ -516,20 +518,35 @@ def update_coupon(
     amount: int,
     usage_limit: int,
     expires_at: str | None,
+    is_active: bool | int | None = None,
 ) -> bool:
     now = datetime.now().isoformat(timespec="seconds")
     normalized = (code or "").strip().upper()
     if not normalized:
         return False
+    updates = ["code=?", "amount=?", "usage_limit=?", "expires_at=?", "updated_at=?"]
+    params: list[Any] = [normalized, int(amount), int(usage_limit), expires_at, now]
+    if is_active is not None:
+        updates.append("is_active=?")
+        params.append(1 if bool(is_active) else 0)
+    params.append(coupon_id)
     db_execute(
-        """
+        f"""
         UPDATE coupons
-        SET code=?, amount=?, usage_limit=?, expires_at=?, updated_at=?
+        SET {', '.join(updates)}
         WHERE id=?
         """,
-        (normalized, int(amount), int(usage_limit), expires_at, now, coupon_id),
+        tuple(params),
     )
     return True
+
+
+def set_coupon_active(coupon_id: int, active: bool) -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    db_execute(
+        "UPDATE coupons SET is_active=?, updated_at=? WHERE id=?",
+        (1 if active else 0, now, coupon_id),
+    )
 
 
 def list_coupons(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
@@ -545,14 +562,30 @@ def list_coupons(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
     for row in rows:
         if not row.get("expires_at"):
             row["expires_at"] = None
+        row["is_active"] = bool(int(row.get("is_active") or 0))
     return rows
 
 
 def get_coupon(coupon_id: int):
     row = db_execute("SELECT * FROM coupons WHERE id=?", (coupon_id,), fetchone=True)
-    if row and not row.get("expires_at"):
-        row["expires_at"] = None
+    if row:
+        if not row.get("expires_at"):
+            row["expires_at"] = None
+        row["is_active"] = bool(int(row.get("is_active") or 0))
     return row
+
+
+def list_coupon_redemptions(coupon_id: int) -> list[dict[str, Any]]:
+    return db_execute(
+        """
+        SELECT user_id, amount, redeemed_at
+        FROM coupon_redemptions
+        WHERE coupon_id=?
+        ORDER BY redeemed_at DESC
+        """,
+        (coupon_id,),
+        fetchall=True,
+    ) or []
 
 
 def get_coupon_by_code(code: str):
@@ -560,8 +593,10 @@ def get_coupon_by_code(code: str):
     if not normalized:
         return None
     row = db_execute("SELECT * FROM coupons WHERE UPPER(code)=?", (normalized,), fetchone=True)
-    if row and not row.get("expires_at"):
-        row["expires_at"] = None
+    if row:
+        if not row.get("expires_at"):
+            row["expires_at"] = None
+        row["is_active"] = bool(int(row.get("is_active") or 0))
     return row
 
 
@@ -573,6 +608,9 @@ def redeem_coupon(user_id: int, code: str) -> tuple[bool, dict[str, Any] | None,
     coupon = get_coupon_by_code(normalized)
     if not coupon:
         return False, None, "چنین کدی وجود ندارد."
+
+    if not coupon.get("is_active"):
+        return False, None, "این کوپن غیرفعال است."
 
     try:
         amount = int(coupon.get("amount") or 0)

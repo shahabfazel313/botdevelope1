@@ -157,7 +157,14 @@
         <li>
             <span>
                 <strong>{{ format_amount(tx.amount) }} تومان</strong>
-                <small>{{ tx.type }}</small>
+                <small>
+                    {{ tx.display_type }}
+                    {% if tx.coupon_code %}
+                        – {{ tx.coupon_code }}
+                    {% elif tx.note %}
+                        – {{ tx.note }}
+                    {% endif %}
+                </small>
             </span>
             <span>{{ format_datetime(tx.created_at) }}</span>
         </li>

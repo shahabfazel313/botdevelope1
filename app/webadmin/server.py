@@ -54,6 +54,8 @@ from ..db import (
     create_coupon,
     get_coupon,
     list_coupons,
+    list_coupon_redemptions,
+    set_coupon_active,
     list_order_manager_messages,
     list_user_manager_messages,
     set_order_financials,
@@ -674,7 +676,22 @@ def create_admin_app() -> FastAPI:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="کاربر یافت نشد")
         stats = get_user_stats(user_id)
         orders = list_orders(user_id=user_id, limit=10)
-        wallet_history = list_wallet_tx_for_user(user_id, limit=25)
+        wallet_history_rows = list_wallet_tx_for_user(user_id, limit=25)
+        wallet_history: list[dict[str, Any]] = []
+        for tx in wallet_history_rows:
+            note = str(tx.get("note") or "")
+            display_type = tx.get("type") or ""
+            coupon_code: str | None = None
+            if note.startswith("COUPON:"):
+                coupon_code = note.split(":", 1)[1] if ":" in note else ""
+                display_type = "Coupon"
+            wallet_history.append(
+                {
+                    **tx,
+                    "display_type": display_type,
+                    "coupon_code": coupon_code.strip() if coupon_code else None,
+                }
+            )
         manager_messages = list_user_manager_messages(user_id, limit=20)
         return _render(
             request,
@@ -823,6 +840,9 @@ def create_admin_app() -> FastAPI:
             item["expires_value"] = expires_value
             item["is_expired"] = is_expired
             item["remaining"] = max(item["usage_limit"] - item["used_count"], 0)
+            item["is_active"] = bool(item.get("is_active"))
+            redemptions = list_coupon_redemptions(item.get("id")) if item.get("id") else []
+            item["redeemed_users"] = [row.get("user_id") for row in redemptions if row.get("user_id") is not None]
         return _render(
             request,
             "coupons.html",
@@ -922,6 +942,23 @@ def create_admin_app() -> FastAPI:
             _flash(request, "به‌روزرسانی کوپن ممکن نشد.", "error")
         else:
             _flash(request, "اطلاعات کوپن بروزرسانی شد.")
+
+        return RedirectResponse(request.url_for("coupons_page"), status.HTTP_303_SEE_OTHER)
+
+    @app.post("/coupons/{coupon_id}/toggle")
+    async def coupon_toggle(
+        request: Request,
+        coupon_id: int,
+        user: str = Depends(_login_required),
+    ):
+        coupon = get_coupon(coupon_id)
+        if not coupon:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="کوپن یافت نشد")
+
+        is_active = bool(coupon.get("is_active"))
+        set_coupon_active(coupon_id, not is_active)
+        state_text = "فعال" if not is_active else "غیرفعال"
+        _flash(request, f"کوپن {coupon.get('code')} {state_text} شد.")
 
         return RedirectResponse(request.url_for("coupons_page"), status.HTTP_303_SEE_OTHER)
 
