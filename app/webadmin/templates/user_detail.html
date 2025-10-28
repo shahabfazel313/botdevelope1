@@ -76,6 +76,30 @@
 </section>
 
 <section class="panel">
+    <header><h2>ارسال پیام به کاربر</h2></header>
+    <form method="post" action="{{ url_for('send_user_message', user_id=profile.user_id) }}" class="form-grid">
+        <label class="span">متن پیام
+            <textarea name="message_text" rows="3" placeholder="پیام مدیر برای ارسال به کاربر" required></textarea>
+        </label>
+        <button type="submit" class="btn-primary">ارسال پیام</button>
+    </form>
+</section>
+
+<section class="panel">
+    <header><h2>تاریخچه پیام‌های مدیر</h2></header>
+    <ul class="list">
+        {% for item in manager_messages %}
+        <li>
+            <span class="text-block">{{ (item.message_text or '—')|replace('\n','<br>')|safe }}</span>
+            <span>{{ format_datetime(item.created_at) }}</span>
+        </li>
+        {% else %}
+        <li class="empty">پیامی ارسال نشده است.</li>
+        {% endfor %}
+    </ul>
+</section>
+
+<section class="panel">
     <header><h2>اعمال تغییر موجودی</h2></header>
     <form method="post" action="{{ url_for('adjust_wallet', user_id=profile.user_id) }}" class="form-grid">
         <label>عملیات

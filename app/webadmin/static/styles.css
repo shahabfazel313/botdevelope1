@@ -270,6 +270,8 @@ table td a.link {
 .badge.approved, .badge.in_progress, .badge.ready_to_deliver { background: rgba(99, 102, 241, 0.12); color: var(--accent); }
 .badge.pending_confirm { background: rgba(245, 158, 11, 0.18); color: var(--warning); }
 .badge.awaiting_payment { background: rgba(239, 68, 68, 0.12); color: var(--danger); }
+.badge.warning { background: rgba(245, 158, 11, 0.18); color: var(--warning); }
+.badge.expired { background: rgba(239, 68, 68, 0.12); color: var(--danger); }
 
 .messages {
     margin-bottom: 1.5rem;
@@ -388,6 +390,21 @@ table td a.link {
     padding: 0.6rem;
     border-radius: 10px;
     border: 1px solid #d1d5db;
+    font-family: inherit;
+}
+
+.form-inline {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.form-inline input {
+    padding: 0.5rem 0.6rem;
+    border-radius: 8px;
+    border: 1px solid #d1d5db;
+    min-width: 110px;
     font-family: inherit;
 }
 

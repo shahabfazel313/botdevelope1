@@ -36,3 +36,7 @@ class VerifyStates(StatesGroup):
 
 class BuildBotStates(StatesGroup):
     wait_requirements = State()  # توضیحات مشتری برای ساخت بات
+
+
+class ProfileStates(StatesGroup):
+    wait_coupon_code = State()

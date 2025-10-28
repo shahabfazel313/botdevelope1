@@ -229,7 +229,18 @@ def ik_plan_review(order_id: int) -> InlineKeyboardMarkup:
 # ====== Profile / History ======
 
 def ik_profile_actions() -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text="🧾 تاریخچه سفارشات", callback_data="hist:menu")]]
+    rows = [
+        [InlineKeyboardButton(text="🎟️ اعمال کوپن", callback_data="profile:coupon")],
+        [InlineKeyboardButton(text="🧾 تاریخچه سفارشات", callback_data="hist:menu")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def ik_coupon_controls() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="✅ اعمال", callback_data="profile:coupon:submit")],
+        [InlineKeyboardButton(text="❌ لغو", callback_data="profile:coupon:cancel")],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -277,7 +288,9 @@ __all__ = [
     "ik_card_receipt_prompt",
     "ik_receipt_review",
     "ik_wallet_confirm",
+    "ik_plan_review",
     "ik_profile_actions",
+    "ik_coupon_controls",
     "ik_history_menu",
     "ik_history_more",
 ]
