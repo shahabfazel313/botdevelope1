@@ -6,6 +6,9 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
+import secrets
+import sqlite3
+import string
 from aiogram import Bot
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse, StreamingResponse
@@ -47,7 +50,14 @@ from ..db import (
     update_order_notes,
     set_user_blocked,
     add_order_manager_message,
+    add_user_manager_message,
+    create_coupon,
+    get_coupon,
+    list_coupons,
+    list_coupon_redemptions,
+    set_coupon_active,
     list_order_manager_messages,
+    list_user_manager_messages,
     set_order_financials,
 )
 
@@ -86,6 +96,11 @@ def _format_datetime(value: Any) -> str:
         return datetime.fromisoformat(str(value)).strftime("%Y-%m-%d %H:%M")
     except Exception:
         return str(value)
+
+
+def _generate_coupon_code(length: int = 8) -> str:
+    alphabet = string.ascii_uppercase + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(max(4, length)))
 
 
 def _flash(request: Request, text: str, category: str = "success") -> None:
@@ -661,7 +676,23 @@ def create_admin_app() -> FastAPI:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="کاربر یافت نشد")
         stats = get_user_stats(user_id)
         orders = list_orders(user_id=user_id, limit=10)
-        wallet_history = list_wallet_tx_for_user(user_id, limit=25)
+        wallet_history_rows = list_wallet_tx_for_user(user_id, limit=25)
+        wallet_history: list[dict[str, Any]] = []
+        for tx in wallet_history_rows:
+            note = str(tx.get("note") or "")
+            display_type = tx.get("type") or ""
+            coupon_code: str | None = None
+            if note.startswith("COUPON:"):
+                coupon_code = note.split(":", 1)[1] if ":" in note else ""
+                display_type = "Coupon"
+            wallet_history.append(
+                {
+                    **tx,
+                    "display_type": display_type,
+                    "coupon_code": coupon_code.strip() if coupon_code else None,
+                }
+            )
+        manager_messages = list_user_manager_messages(user_id, limit=20)
         return _render(
             request,
             "user_detail.html",
@@ -671,6 +702,7 @@ def create_admin_app() -> FastAPI:
                 "stats": stats,
                 "orders": orders,
                 "wallet_history": wallet_history,
+                "manager_messages": manager_messages,
                 "format_datetime": _format_datetime,
                 "format_amount": _format_amount,
                 "nav": "users",
@@ -719,6 +751,26 @@ def create_admin_app() -> FastAPI:
             )
         return RedirectResponse(request.url_for("user_detail", user_id=user_id), status.HTTP_303_SEE_OTHER)
 
+    @app.post("/users/{user_id}/message")
+    async def send_user_message(
+        request: Request,
+        user_id: int,
+        user: str = Depends(_login_required),
+        message_text: str = Form(...),
+    ):
+        profile = get_user(user_id)
+        if not profile:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="کاربر یافت نشد")
+        text = (message_text or "").strip()
+        if not text:
+            _flash(request, "متن پیام نمی‌تواند خالی باشد.", "error")
+            return RedirectResponse(request.url_for("user_detail", user_id=user_id), status.HTTP_303_SEE_OTHER)
+
+        add_user_manager_message(user_id, text)
+        await _notify_user(user_id, f"📬 پیام مدیر\n\n{text}")
+        _flash(request, "پیام برای کاربر ارسال شد.")
+        return RedirectResponse(request.url_for("user_detail", user_id=user_id), status.HTTP_303_SEE_OTHER)
+
     @app.post("/users/{user_id}/block")
     async def toggle_block(
         request: Request,
@@ -757,6 +809,159 @@ def create_admin_app() -> FastAPI:
                 "nav": "wallet",
             },
         )
+
+    @app.get("/coupons")
+    async def coupons_page(request: Request, user: str = Depends(_login_required)):
+        coupons = list_coupons(limit=200)
+        now_dt = datetime.now()
+        for item in coupons:
+            try:
+                item["amount"] = int(item.get("amount") or 0)
+            except (TypeError, ValueError):
+                item["amount"] = 0
+            try:
+                item["usage_limit"] = int(item.get("usage_limit") or 0)
+            except (TypeError, ValueError):
+                item["usage_limit"] = 0
+            try:
+                item["used_count"] = int(item.get("used_count") or 0)
+            except (TypeError, ValueError):
+                item["used_count"] = 0
+            expires_at = item.get("expires_at")
+            expires_value = ""
+            is_expired = False
+            if expires_at:
+                try:
+                    exp_dt = datetime.fromisoformat(str(expires_at))
+                    is_expired = exp_dt < now_dt
+                    expires_value = exp_dt.strftime("%Y-%m-%d")
+                except ValueError:
+                    expires_value = str(expires_at)[:10]
+            item["expires_value"] = expires_value
+            item["is_expired"] = is_expired
+            item["remaining"] = max(item["usage_limit"] - item["used_count"], 0)
+            item["is_active"] = bool(item.get("is_active"))
+            redemptions = list_coupon_redemptions(item.get("id")) if item.get("id") else []
+            item["redeemed_users"] = [row.get("user_id") for row in redemptions if row.get("user_id") is not None]
+        return _render(
+            request,
+            "coupons.html",
+            {
+                "title": "مدیریت کوپن‌ها",
+                "coupons": coupons,
+                "format_amount": _format_amount,
+                "format_datetime": _format_datetime,
+                "nav": "coupons",
+            },
+        )
+
+    @app.post("/coupons/create")
+    async def coupon_create(
+        request: Request,
+        user: str = Depends(_login_required),
+        code: str = Form(""),
+        amount: int = Form(...),
+        usage_limit: int = Form(...),
+        expires_on: str = Form(""),
+    ):
+        try:
+            if amount <= 0 or usage_limit <= 0:
+                raise ValueError("invalid numbers")
+        except Exception:
+            _flash(request, "ورودی‌ها معتبر نیستند.", "error")
+            return RedirectResponse(request.url_for("coupons_page"), status.HTTP_303_SEE_OTHER)
+
+        normalized_code = (code or "").strip().upper()
+        if not normalized_code:
+            normalized_code = _generate_coupon_code()
+
+        expires_at: str | None = None
+        expires_input = (expires_on or "").strip()
+        if expires_input:
+            expires_at = f"{expires_input}T23:59:59"
+
+        try:
+            create_coupon(normalized_code, amount, usage_limit, expires_at)
+        except sqlite3.IntegrityError:
+            _flash(request, "این کد قبلاً ثبت شده است.", "error")
+        except ValueError:
+            _flash(request, "کد کوپن معتبر نیست.", "error")
+        else:
+            _flash(request, f"کوپن {normalized_code} ایجاد شد.")
+
+        return RedirectResponse(request.url_for("coupons_page"), status.HTTP_303_SEE_OTHER)
+
+    @app.post("/coupons/{coupon_id}/update")
+    async def coupon_update(
+        request: Request,
+        coupon_id: int,
+        user: str = Depends(_login_required),
+        code: str = Form(...),
+        amount: int = Form(...),
+        usage_limit: int = Form(...),
+        expires_on: str = Form(""),
+    ):
+        coupon = get_coupon(coupon_id)
+        if not coupon:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="کوپن یافت نشد")
+
+        try:
+            if amount <= 0 or usage_limit <= 0:
+                raise ValueError
+        except Exception:
+            _flash(request, "مقادیر وارد شده معتبر نیست.", "error")
+            return RedirectResponse(request.url_for("coupons_page"), status.HTTP_303_SEE_OTHER)
+
+        used_count = int(coupon.get("used_count") or 0)
+        if usage_limit < used_count:
+            _flash(request, "تعداد قابل استفاده نمی‌تواند کمتر از تعداد استفاده شده باشد.", "error")
+            return RedirectResponse(request.url_for("coupons_page"), status.HTTP_303_SEE_OTHER)
+
+        expires_at: str | None = None
+        expires_input = (expires_on or "").strip()
+        if expires_input:
+            expires_at = f"{expires_input}T23:59:59"
+
+        normalized_code = (code or "").strip().upper()
+        if not normalized_code:
+            _flash(request, "کد کوپن نمی‌تواند خالی باشد.", "error")
+            return RedirectResponse(request.url_for("coupons_page"), status.HTTP_303_SEE_OTHER)
+        try:
+            success = update_coupon(
+                coupon_id,
+                code=normalized_code,
+                amount=amount,
+                usage_limit=usage_limit,
+                expires_at=expires_at,
+            )
+        except sqlite3.IntegrityError:
+            _flash(request, "کد وارد شده تکراری است.", "error")
+            return RedirectResponse(request.url_for("coupons_page"), status.HTTP_303_SEE_OTHER)
+
+        if not success:
+            _flash(request, "به‌روزرسانی کوپن ممکن نشد.", "error")
+        else:
+            _flash(request, "اطلاعات کوپن بروزرسانی شد.")
+
+        return RedirectResponse(request.url_for("coupons_page"), status.HTTP_303_SEE_OTHER)
+
+    @app.post("/coupons/{coupon_id}/toggle")
+    async def coupon_toggle(
+        request: Request,
+        coupon_id: int,
+        user: str = Depends(_login_required),
+    ):
+        coupon = get_coupon(coupon_id)
+        if not coupon:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="کوپن یافت نشد")
+
+        is_active = bool(coupon.get("is_active"))
+        set_coupon_active(coupon_id, not is_active)
+        state_text = "فعال" if not is_active else "غیرفعال"
+        _flash(request, f"کوپن {coupon.get('code')} {state_text} شد.")
+
+        return RedirectResponse(request.url_for("coupons_page"), status.HTTP_303_SEE_OTHER)
+
 
     return app
 

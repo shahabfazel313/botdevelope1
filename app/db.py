@@ -164,6 +164,7 @@ def init_db():
             ("users", "contact_shared_at", "TEXT"),
             ("users", "is_blocked", "INTEGER DEFAULT 0"),
             ("service_messages", "updated_at", "TEXT"),
+            ("coupons", "is_active", "INTEGER DEFAULT 1"),
         ]
         for t, c, typ in add_cols:
             if _table_exists(con, t) and not _col_exists(con, t, c):
@@ -216,6 +217,57 @@ def init_db():
         )
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_service_message_replies_msg ON service_message_replies(service_message_id);"
+        )
+
+        # direct messages from managers to users
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_manager_messages(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                message_text TEXT,
+                created_at TEXT
+            );
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_manager_messages_user ON user_manager_messages(user_id);"
+        )
+
+        # coupons
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS coupons(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE NOT NULL,
+                amount INTEGER NOT NULL,
+                usage_limit INTEGER NOT NULL,
+                used_count INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                expires_at TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            );
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS coupon_redemptions(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                coupon_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                amount INTEGER NOT NULL,
+                redeemed_at TEXT,
+                UNIQUE(coupon_id, user_id),
+                FOREIGN KEY(coupon_id) REFERENCES coupons(id) ON DELETE CASCADE
+            );
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_coupon_redemptions_coupon ON coupon_redemptions(coupon_id);"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_coupon_redemptions_user ON coupon_redemptions(user_id);"
         )
         con.commit()
 
@@ -359,6 +411,31 @@ def list_order_manager_messages(order_id: int, limit: int = 50) -> list[dict[str
     )
 
 
+def add_user_manager_message(user_id: int, message_text: str) -> int:
+    now = datetime.now().isoformat(timespec="seconds")
+    return db_execute(
+        """
+        INSERT INTO user_manager_messages(user_id, message_text, created_at)
+        VALUES(?,?,?)
+        """,
+        (user_id, message_text or "", now),
+        return_lastrowid=True,
+    )
+
+
+def list_user_manager_messages(user_id: int, limit: int = 50) -> list[dict[str, Any]]:
+    return db_execute(
+        """
+        SELECT * FROM user_manager_messages
+        WHERE user_id=?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (user_id, limit),
+        fetchall=True,
+    )
+
+
 def set_order_financials(order_id: int, cost_amount: int) -> None:
     order = get_order(order_id)
     if not order:
@@ -417,6 +494,173 @@ def expire_orders_and_refund():
             set_order_wallet_reserved(rid, 0)
         set_order_status(rid, "EXPIRED")
     return expired
+
+
+def create_coupon(code: str, amount: int, usage_limit: int, expires_at: str | None = None) -> int:
+    now = datetime.now().isoformat(timespec="seconds")
+    normalized = (code or "").strip().upper()
+    if not normalized:
+        raise ValueError("Coupon code cannot be empty")
+    return db_execute(
+        """
+        INSERT INTO coupons(code, amount, usage_limit, used_count, expires_at, created_at, updated_at, is_active)
+        VALUES(?,?,?,?,?,?,?,?)
+        """,
+        (normalized, int(amount), int(usage_limit), 0, expires_at, now, now, 1),
+        return_lastrowid=True,
+    )
+
+
+def update_coupon(
+    coupon_id: int,
+    *,
+    code: str,
+    amount: int,
+    usage_limit: int,
+    expires_at: str | None,
+    is_active: bool | int | None = None,
+) -> bool:
+    now = datetime.now().isoformat(timespec="seconds")
+    normalized = (code or "").strip().upper()
+    if not normalized:
+        return False
+    updates = ["code=?", "amount=?", "usage_limit=?", "expires_at=?", "updated_at=?"]
+    params: list[Any] = [normalized, int(amount), int(usage_limit), expires_at, now]
+    if is_active is not None:
+        updates.append("is_active=?")
+        params.append(1 if bool(is_active) else 0)
+    params.append(coupon_id)
+    db_execute(
+        f"""
+        UPDATE coupons
+        SET {', '.join(updates)}
+        WHERE id=?
+        """,
+        tuple(params),
+    )
+    return True
+
+
+def set_coupon_active(coupon_id: int, active: bool) -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    db_execute(
+        "UPDATE coupons SET is_active=?, updated_at=? WHERE id=?",
+        (1 if active else 0, now, coupon_id),
+    )
+
+
+def list_coupons(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    rows = db_execute(
+        """
+        SELECT * FROM coupons
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+        """,
+        (limit, offset),
+        fetchall=True,
+    ) or []
+    for row in rows:
+        if not row.get("expires_at"):
+            row["expires_at"] = None
+        row["is_active"] = bool(int(row.get("is_active") or 0))
+    return rows
+
+
+def get_coupon(coupon_id: int):
+    row = db_execute("SELECT * FROM coupons WHERE id=?", (coupon_id,), fetchone=True)
+    if row:
+        if not row.get("expires_at"):
+            row["expires_at"] = None
+        row["is_active"] = bool(int(row.get("is_active") or 0))
+    return row
+
+
+def list_coupon_redemptions(coupon_id: int) -> list[dict[str, Any]]:
+    return db_execute(
+        """
+        SELECT user_id, amount, redeemed_at
+        FROM coupon_redemptions
+        WHERE coupon_id=?
+        ORDER BY redeemed_at DESC
+        """,
+        (coupon_id,),
+        fetchall=True,
+    ) or []
+
+
+def get_coupon_by_code(code: str):
+    normalized = (code or "").strip().upper()
+    if not normalized:
+        return None
+    row = db_execute("SELECT * FROM coupons WHERE UPPER(code)=?", (normalized,), fetchone=True)
+    if row:
+        if not row.get("expires_at"):
+            row["expires_at"] = None
+        row["is_active"] = bool(int(row.get("is_active") or 0))
+    return row
+
+
+def redeem_coupon(user_id: int, code: str) -> tuple[bool, dict[str, Any] | None, str | None]:
+    normalized = (code or "").strip().upper()
+    if not normalized:
+        return False, None, "کد کوپن نامعتبر است."
+
+    coupon = get_coupon_by_code(normalized)
+    if not coupon:
+        return False, None, "چنین کدی وجود ندارد."
+
+    if not coupon.get("is_active"):
+        return False, None, "این کوپن غیرفعال است."
+
+    try:
+        amount = int(coupon.get("amount") or 0)
+    except (TypeError, ValueError):
+        amount = 0
+    if amount <= 0:
+        return False, None, "مبلغ این کوپن معتبر نیست."
+
+    limit = int(coupon.get("usage_limit") or 0)
+    used = int(coupon.get("used_count") or 0)
+    if limit and used >= limit:
+        return False, None, "ظرفیت استفاده از این کوپن تکمیل شده است."
+
+    expires_at = coupon.get("expires_at")
+    if expires_at:
+        try:
+            expire_dt = datetime.fromisoformat(str(expires_at))
+            if datetime.now() > expire_dt:
+                return False, None, "تاریخ انقضای این کوپن گذشته است."
+        except ValueError:
+            pass
+
+    already = db_execute(
+        "SELECT id FROM coupon_redemptions WHERE coupon_id=? AND user_id=?",
+        (coupon["id"], user_id),
+        fetchone=True,
+    )
+    if already:
+        return False, None, "این کد قبلاً اعمال شده است."
+
+    success = change_wallet(user_id, amount, "CREDIT", note=f"COUPON:{coupon['code']}")
+    if not success:
+        return False, None, "امکان واریز مبلغ کوپن وجود ندارد."
+
+    now = datetime.now().isoformat(timespec="seconds")
+    db_execute(
+        """
+        INSERT INTO coupon_redemptions(coupon_id, user_id, amount, redeemed_at)
+        VALUES(?,?,?,?)
+        """,
+        (coupon["id"], user_id, amount, now),
+    )
+    db_execute(
+        "UPDATE coupons SET used_count=used_count+1, updated_at=? WHERE id=?",
+        (now, coupon["id"]),
+    )
+    user = get_user(user_id)
+    balance = int(user.get("wallet_balance") or 0) if user else 0
+    return True, {"amount": amount, "balance": balance, "code": coupon["code"]}, None
+
 
 # ====== Stats & History ======
 def get_user_stats(user_id: int):
