@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title or 'پنل مدیریت' }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/styles.css') }}">
+</head>
+<body data-theme="{{ theme }}">
+<header class="topbar">
+    <div class="brand">🤖 پنل مدیریت بات پرمیوم</div>
+    {% if request.session.get('auth_user') %}
+    <div class="topbar-actions">
+        <nav>
+            <a href="{{ url_for('dashboard') }}" class="{{ 'active' if nav == 'dashboard' else '' }}">داشبورد</a>
+            <a href="{{ url_for('orders_page') }}" class="{{ 'active' if nav == 'orders' else '' }}">سفارش‌ها</a>
+            <a href="{{ url_for('messages') }}" class="{{ 'active' if nav == 'messages' else '' }}">پیام‌ها</a>
+            <a href="{{ url_for('users_page') }}" class="{{ 'active' if nav == 'users' else '' }}">کاربران</a>
+            <a href="{{ url_for('products_page') }}" class="{{ 'active' if nav == 'products' else '' }}">محصولات</a>
+            <a href="{{ url_for('wallet_page') }}" class="{{ 'active' if nav == 'wallet' else '' }}">کیف پول</a>
+            <a href="{{ url_for('logout') }}" class="logout">خروج</a>
+        </nav>
+        <form method="post" action="{{ url_for('toggle_theme') }}" class="theme-toggle">
+            <button type="submit">{{ '☀️ حالت روشن' if theme == 'dark' else '🌙 حالت تاریک' }}</button>
+        </form>
+    </div>
+    {% endif %}
+</header>
+<main class="container">
+    {% if messages %}
+        <div class="messages">
+            {% for m in messages %}
+                <div class="message {{ m.category }}">{{ m.text }}</div>
+            {% endfor %}
+        </div>
+    {% endif %}
+    {% block content %}{% endblock %}
+</main>
+<footer class="footer">ساخته‌شده برای مدیریت سریع و ساده سفارش‌ها ✨</footer>
+</body>
+</html>
