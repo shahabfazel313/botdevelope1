@@ -26,6 +26,8 @@ class CheckoutStates(StatesGroup):
     wait_card_confirm = State()
     wait_wallet_comment = State()
     wait_wallet_confirm = State()
+    wait_plan_comment = State()
+    wait_plan_confirm = State()
 
 
 class VerifyStates(StatesGroup):

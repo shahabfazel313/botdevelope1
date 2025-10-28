@@ -567,6 +567,23 @@ def create_admin_app() -> FastAPI:
             else:
                 _flash(request, "تغییری در نوع پرداخت ایجاد نشد.", "info")
 
+        elif action == "plan_confirm":
+            if order.get("status") != "PENDING_PLAN":
+                _flash(request, "امکان تایید طرح وجود ندارد (وضعیت نامعتبر است).", "error")
+            else:
+                set_order_status(order_id, "IN_PROGRESS")
+                updated = get_order(order_id)
+                if user_id:
+                    product_title = updated.get("plan_title") or updated.get("service_code") or order_title
+                    await _notify_user(
+                        user_id,
+                        (
+                            f"✅ طرح خرید اول سفارش شما تایید شد و در حال انجام می‌باشد.\n"
+                            f"سفارش #{order_id} - {product_title}"
+                        ),
+                    )
+                _flash(request, "طرح خرید اول تایید و سفارش در حال انجام شد.")
+
         elif action == "manager_note":
             text = (manager_note or "").strip()
             if not text:

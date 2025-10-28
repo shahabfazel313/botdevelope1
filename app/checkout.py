@@ -6,6 +6,7 @@ def _status_fa(code: str) -> str:
     return {
         "AWAITING_PAYMENT": "در انتظار پرداخت",
         "PENDING_CONFIRM": "در انتظار تایید پرداخت",
+        "PENDING_PLAN": "در انتظار تایید طرح",
         "APPROVED": "پرداخت تایید شد",
         "IN_PROGRESS": "در حال انجام",
         "READY_TO_DELIVER": "آماده تحویل",
@@ -34,7 +35,10 @@ def _kb_checkout(oid: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="💳 پرداخت کارت", callback_data=f"cart:paycard:{oid}"),
             InlineKeyboardButton(text="👛 کیف پول", callback_data=f"cart:paywallet:{oid}"),
         ],
-        [InlineKeyboardButton(text="🔀 پرداخت ترکیبی", callback_data=f"cart:paymix:{oid}")],
+        [
+            InlineKeyboardButton(text="🔀 پرداخت ترکیبی", callback_data=f"cart:paymix:{oid}"),
+            InlineKeyboardButton(text="✨ طرح خرید اول", callback_data=f"cart:payplan:{oid}"),
+        ],
         [InlineKeyboardButton(text="❌ لغو سفارش", callback_data=f"cart:cancel:{oid}")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
