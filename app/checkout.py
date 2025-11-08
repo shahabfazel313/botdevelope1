@@ -50,12 +50,31 @@ async def send_checkout_prompt(msg: Message, order_id: int):
         await msg.answer("سفارش پیدا نشد.")
         return
     title = _order_title(o.get("service_category",""), o.get("service_code",""))
-    amount = int(o.get("amount_total") or 0)
+    try:
+        amount_original = int(o.get("amount_original") or o.get("amount_total") or 0)
+    except (TypeError, ValueError):
+        amount_original = 0
+    try:
+        amount_discount = int(o.get("discount_amount") or 0)
+    except (TypeError, ValueError):
+        amount_discount = 0
+    try:
+        amount_total = int(o.get("amount_total") or 0)
+    except (TypeError, ValueError):
+        amount_total = 0
     status = _status_fa(o.get("status") or "")
+    amount_lines = []
+    if amount_discount > 0:
+        amount_lines.append(f"قیمت اولیه: <b>{amount_original} {CURRENCY}</b>")
+        amount_lines.append(f"تخفیف: <b>{amount_discount} {CURRENCY}</b>")
+        amount_lines.append(f"قیمت نهایی: <b>{amount_total} {CURRENCY}</b>")
+    else:
+        amount_lines.append(f"مبلغ: <b>{amount_total} {CURRENCY}</b>")
+    amount_block = "\n".join(amount_lines)
     text = (
         f"📦 <b>{title}</b>\n"
         f"شماره سفارش: <code>#{o['id']}</code>\n"
-        f"مبلغ: <b>{amount} {CURRENCY}</b>\n"
+        f"{amount_block}\n"
         f"وضعیت: <b>{status}</b>\n\n"
         f"برای ادامه، روش پرداخت را انتخاب کنید:"
     )
