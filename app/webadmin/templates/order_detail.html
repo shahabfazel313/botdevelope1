@@ -11,8 +11,16 @@
             <p>{{ order.plan_title or order.service_code or '—' }}</p>
         </div>
         <div>
-            <strong>مبلغ کل</strong>
-            <p>{{ format_amount(order.amount_total or order.price) }} تومان</p>
+            <strong>مبالغ</strong>
+            <p>
+                {% if order.discount_amount %}
+                    قیمت اولیه: {{ format_amount(order.amount_original or order.price) }} تومان<br>
+                    تخفیف: {{ format_amount(order.discount_amount) }} تومان<br>
+                    مبلغ نهایی: {{ format_amount(order.amount_total or order.price) }} تومان
+                {% else %}
+                    {{ format_amount(order.amount_total or order.price) }} تومان
+                {% endif %}
+            </p>
         </div>
         {% if order.discount_amount %}
         <div>
@@ -72,6 +80,12 @@
                 {% endif %}
             </p>
         </div>
+        {% if order.discount_code %}
+        <div>
+            <strong>کد تخفیف</strong>
+            <p><code>{{ order.discount_code }}</code></p>
+        </div>
+        {% endif %}
         <div class="span">
             <strong>یادداشت سفارش / تحویل</strong>
             <p class="text-block">{{ (order.notes or '—')|replace('\n', '<br>')|safe }}</p>

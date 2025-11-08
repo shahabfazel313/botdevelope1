@@ -202,6 +202,20 @@ def init_db():
             if _table_exists(con, t) and not _col_exists(con, t, c):
                 cur.execute(f"ALTER TABLE {t} ADD COLUMN {c} {typ};")
 
+        if _table_exists(con, "orders"):
+            cur.execute(
+                """
+                UPDATE orders
+                SET amount_original = CASE
+                        WHEN (amount_original IS NULL OR amount_original = 0)
+                             AND IFNULL(discount_amount, 0) = 0
+                        THEN IFNULL(amount_total, amount_original)
+                        ELSE amount_original
+                    END,
+                    discount_amount = IFNULL(discount_amount, 0)
+                """
+            )
+
         # wallet transactions
         cur.execute("""
         CREATE TABLE IF NOT EXISTS wallet_tx(
@@ -586,6 +600,7 @@ def expire_orders_and_refund():
             change_wallet(o["user_id"], reserved, "REFUND", note=f"Expire order #{rid}", order_id=rid)
             set_order_wallet_reserved(rid, 0)
         set_order_status(rid, "EXPIRED")
+        cancel_discount_usage(rid, reset_order=True)
     return expired
 
 

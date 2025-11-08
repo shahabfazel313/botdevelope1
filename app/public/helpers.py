@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from html import escape
-from html import escape
 from typing import Any
 
 from ..config import CURRENCY, ADMIN_IDS

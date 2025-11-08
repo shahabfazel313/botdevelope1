@@ -301,6 +301,8 @@ __all__ = [
     "ik_build_actions",
     "ik_other_services_actions",
     "ik_cart_actions",
+    "ik_discount_code_controls",
+    "ik_discount_prompt",
     "ik_card_receipt_prompt",
     "ik_receipt_review",
     "ik_wallet_confirm",
