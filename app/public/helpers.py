@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from html import escape
-from html import escape
 from typing import Any
 
 from ..config import CURRENCY, ADMIN_IDS
@@ -68,7 +67,18 @@ def _fmt_order_for_user(order: dict[str, Any]) -> str:
         order.get("service_code", ""),
         order.get("notes"),
     )
-    amount = int(order.get("amount_total") or order.get("price") or 0)
+    try:
+        amount_original = int(order.get("amount_original") or order.get("amount_total") or order.get("price") or 0)
+    except (TypeError, ValueError):
+        amount_original = 0
+    try:
+        discount_amount = int(order.get("discount_amount") or 0)
+    except (TypeError, ValueError):
+        discount_amount = 0
+    try:
+        amount = int(order.get("amount_total") or order.get("price") or 0)
+    except (TypeError, ValueError):
+        amount = 0
     payment_type = order.get("payment_type") or "—"
     wallet_used = int(order.get("wallet_used_amount") or 0)
     status = _status_fa(order.get("status") or "")
@@ -115,10 +125,22 @@ def _fmt_order_for_user(order: dict[str, Any]) -> str:
 
     details_text = "\n" + "\n".join(details) if details else ""
 
+    amount_lines = []
+    if discount_amount > 0:
+        amount_lines.append(f"قیمت اولیه: <b>{amount_original} {CURRENCY}</b>")
+        amount_lines.append(f"تخفیف: <b>{discount_amount} {CURRENCY}</b>")
+        amount_lines.append(f"قیمت نهایی: <b>{amount} {CURRENCY}</b>")
+    else:
+        amount_lines.append(f"مبلغ: <b>{amount} {CURRENCY}</b>")
+    discount_code = (order.get("discount_code") or "").strip()
+    if discount_code:
+        amount_lines.append(f"کد تخفیف: <code>{escape(discount_code)}</code>")
+    amount_block = "\n".join(amount_lines)
+
     return (
         f"📦 <b>{title}</b>\n"
         f"شماره سفارش: <code>#{order['id']}</code>\n"
-        f"مبلغ: <b>{amount} {CURRENCY}</b>\n"
+        f"{amount_block}\n"
         f"نوع پرداخت: <b>{payment_label}</b>\n"
         f"مقدار استفاده‌شده از کیف پول: <b>{wallet_used} {CURRENCY}</b>\n"
         f"وضعیت: <b>{status}</b>\n"

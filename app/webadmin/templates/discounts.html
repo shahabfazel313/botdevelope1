@@ -1,0 +1,129 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>مدیریت کدهای تخفیف</h1>
+
+<section class="panel">
+    <header>
+        <h2>ساخت کد تخفیف برای محصولات</h2>
+        <p class="muted">برای هر محصول می‌توانید کد تخفیف اختصاصی با نام، مبلغ و تاریخ انقضا تعیین کنید.</p>
+    </header>
+    <table>
+        <thead>
+            <tr>
+                <th>دسته</th>
+                <th>محصول</th>
+                <th>قیمت فعلی</th>
+                <th>ایجاد کد جدید</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in product_variants %}
+            <tr>
+                <td>{{ item.group }}</td>
+                <td>{{ item.display_name }}</td>
+                <td>{{ format_amount(item.price) }} {{ currency }}</td>
+                <td>
+                    <form method="post" action="{{ url_for('discount_create') }}" class="form-inline">
+                        <input type="hidden" name="product_code" value="{{ item.code }}">
+                        <input type="text" name="title" placeholder="نام کد">
+                        <input type="text" name="code" placeholder="کد">
+                        <input type="number" name="amount" min="1" value="{{ item.price or '' }}" placeholder="مبلغ ({{ currency }})" required>
+                        <input type="number" name="usage_limit" min="1" value="1" placeholder="تعداد" required>
+                        <input type="date" name="expires_on">
+                        <input type="time" name="expires_time">
+                        <button type="submit" class="btn-primary">ساخت کد</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" class="empty">محصولی برای نمایش وجود ندارد.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+
+<section class="panel">
+    <header><h2>کدهای تخفیف موجود</h2></header>
+    <table>
+        <thead>
+            <tr>
+                <th>کد / محصول</th>
+                <th>مبلغ و ظرفیت</th>
+                <th>انقضا</th>
+                <th>وضعیت</th>
+                <th>کاربران</th>
+                <th>ویرایش</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in discounts %}
+            <tr>
+                <td>
+                    <strong>{{ item.code }}</strong>
+                    <div class="muted">{{ item.product_title }}{% if item.product_group %} – {{ item.product_group }}{% endif %}</div>
+                    {% if item.title %}<div class="muted">{{ item.title }}</div>{% endif %}
+                </td>
+                <td>
+                    {{ format_amount(item.amount) }} {{ currency }}<br>
+                    استفاده شده: {{ item.used_count }} / {{ item.usage_limit }}<br>
+                    رزروها: {{ item.active_reservations }}
+                </td>
+                <td>
+                    {% if item.expires_value %}
+                        {{ item.expires_value }}{% if item.expires_time_value %} {{ item.expires_time_value }}{% endif %}
+                    {% else %}
+                        —
+                    {% endif %}
+                    {% if item.is_expired %}<span class="badge danger">منقضی</span>{% endif %}
+                </td>
+                <td>
+                    {% if item.is_active %}
+                        <span class="badge success">فعال</span>
+                    {% else %}
+                        <span class="badge muted">غیرفعال</span>
+                    {% endif %}
+                    <form method="post" action="{{ url_for('discount_toggle', discount_id=item.id) }}">
+                        <button type="submit" class="btn-secondary">{% if item.is_active %}غیرفعال کردن{% else %}فعال کردن{% endif %}</button>
+                    </form>
+                </td>
+                <td>
+                    {% if item.redemptions %}
+                        <ul class="list">
+                            {% for red in item.redemptions %}
+                            <li>
+                                👤 {{ red.user_id }}
+                                <span class="muted">({{ status_labels.get(red.status, red.status) }})</span>
+                                {% if red.order_id %}<span class="muted">#{{ red.order_id }}</span>{% endif %}
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <span class="muted">استفاده‌ای ثبت نشده است.</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <form method="post" action="{{ url_for('discount_update', discount_id=item.id) }}" class="form-inline">
+                        <select name="product_code">
+                            {% for variant in product_variants %}
+                            <option value="{{ variant.code }}" {{ 'selected' if variant.code == item.product_code else '' }}>
+                                {{ variant.display_name }} – {{ variant.group }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                        <input type="text" name="title" value="{{ item.title or '' }}" placeholder="نام">
+                        <input type="text" name="code" value="{{ item.code }}" required>
+                        <input type="number" name="amount" min="1" value="{{ item.amount }}" required>
+                        <input type="number" name="usage_limit" min="{{ item.used_count if item.used_count else 1 }}" value="{{ item.usage_limit }}" required>
+                        <input type="date" name="expires_on" value="{{ item.expires_value }}">
+                        <input type="time" name="expires_time" value="{{ item.expires_time_value }}">
+                        <button type="submit" class="btn-primary">ذخیره</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" class="empty">تا کنون کد تخفیفی ایجاد نشده است.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

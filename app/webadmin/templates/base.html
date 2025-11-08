@@ -19,6 +19,7 @@
             <a href="{{ url_for('products_page') }}" class="{{ 'active' if nav == 'products' else '' }}">محصولات</a>
             <a href="{{ url_for('wallet_page') }}" class="{{ 'active' if nav == 'wallet' else '' }}">کیف پول</a>
             <a href="{{ url_for('coupons_page') }}" class="{{ 'active' if nav == 'coupons' else '' }}">کوپن‌ها</a>
+            <a href="{{ url_for('discounts_page') }}" class="{{ 'active' if nav == 'discounts' else '' }}">کدهای تخفیف</a>
             <a href="{{ url_for('logout') }}" class="logout">خروج</a>
         </nav>
         <form method="post" action="{{ url_for('toggle_theme') }}" class="theme-toggle">
