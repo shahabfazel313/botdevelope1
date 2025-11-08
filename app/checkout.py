@@ -51,13 +51,29 @@ async def send_checkout_prompt(msg: Message, order_id: int):
         return
     title = _order_title(o.get("service_category",""), o.get("service_code",""))
     amount = int(o.get("amount_total") or 0)
+    base_amount = int(o.get("base_amount") or 0)
+    discount_amount = int(o.get("discount_amount") or 0)
+    if base_amount <= 0:
+        base_amount = max(amount, amount + discount_amount)
+    discount_code = (o.get("discount_code") or "").strip()
+    amount_lines = []
+    if discount_amount > 0:
+        amount_lines.append(f"مبلغ اصلی: <b>{base_amount} {CURRENCY}</b>")
+        code_hint = f" (<code>{discount_code}</code>)" if discount_code else ""
+        amount_lines.append(
+            f"تخفیف اعمال‌شده{code_hint}: <b>{discount_amount} {CURRENCY}-</b>"
+        )
+        amount_lines.append(f"مبلغ قابل پرداخت: <b>{amount} {CURRENCY}</b>")
+    else:
+        amount_lines.append(f"مبلغ: <b>{amount} {CURRENCY}</b>")
     status = _status_fa(o.get("status") or "")
     text = (
         f"📦 <b>{title}</b>\n"
         f"شماره سفارش: <code>#{o['id']}</code>\n"
-        f"مبلغ: <b>{amount} {CURRENCY}</b>\n"
-        f"وضعیت: <b>{status}</b>\n\n"
-        f"برای ادامه، روش پرداخت را انتخاب کنید:"
+        + "\n".join(amount_lines)
+        + "\n"
+        + f"وضعیت: <b>{status}</b>\n\n"
+        + f"برای ادامه، روش پرداخت را انتخاب کنید:"
     )
-    enable_plan = o.get("service_category") == "AI"
+    enable_plan = o.get("service_category") == "AI" and (o.get("payment_type") or "") != "FIRST_PLAN"
     await msg.answer(text, reply_markup=_kb_checkout(o["id"], enable_plan=enable_plan))

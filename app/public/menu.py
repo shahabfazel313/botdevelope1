@@ -1,4 +1,5 @@
 from datetime import datetime
+from html import escape
 
 from aiogram import F
 from aiogram.fsm.context import FSMContext
@@ -62,16 +63,32 @@ async def on_reply_cart(message: Message, state: FSMContext) -> None:
             order.get("notes"),
         )
         amount = int(order.get("amount_total") or 0)
+        base_amount = int(order.get("base_amount") or 0)
+        discount_amount = int(order.get("discount_amount") or 0)
+        if base_amount <= 0:
+            base_amount = max(amount, amount + discount_amount)
+        discount_code = (order.get("discount_code") or "").strip()
         reserved = int(order.get("wallet_reserved_amount") or 0)
         remaining = max(amount - reserved, 0)
+        amount_lines = []
+        if discount_amount > 0:
+            amount_lines.append(f"مبلغ اصلی: <b>{base_amount} {CURRENCY}</b>")
+            code_hint = f" (<code>{escape(discount_code)}</code>)" if discount_code else ""
+            amount_lines.append(
+                f"تخفیف اعمال‌شده{code_hint}: <b>{discount_amount} {CURRENCY}-</b>"
+            )
+            amount_lines.append(f"مبلغ نهایی: <b>{amount} {CURRENCY}</b>")
+        else:
+            amount_lines.append(f"مبلغ کل: <b>{amount} {CURRENCY}</b>")
         text = (
             f"🧺 سفارش #{order['id']} — <b>{title}</b>\n"
-            f"مبلغ کل: <b>{amount} {CURRENCY}</b>\n"
-            f"از کیف پول رزرو شده: <b>{reserved} {CURRENCY}</b>\n"
-            f"باقیمانده برای پرداخت کارت: <b>{remaining} {CURRENCY}</b>\n"
-            f"وضعیت: <b>{_status_fa(order['status'])}</b>{ttl}"
+            + "\n".join(amount_lines)
+            + "\n"
+            + f"از کیف پول رزرو شده: <b>{reserved} {CURRENCY}</b>\n"
+            + f"باقیمانده برای پرداخت کارت: <b>{remaining} {CURRENCY}</b>\n"
+            + f"وضعیت: <b>{_status_fa(order['status'])}</b>{ttl}"
         )
-        enable_plan = order.get("service_category") == "AI"
+        enable_plan = order.get("service_category") == "AI" and (order.get("payment_type") or "") != "FIRST_PLAN"
         await message.answer(text, reply_markup=ik_cart_actions(order["id"], enable_plan=enable_plan))
 
 
