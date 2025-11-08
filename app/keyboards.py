@@ -195,38 +195,18 @@ def ik_cart_actions(order_id: int, *, enable_plan: bool = False) -> InlineKeyboa
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def ik_discount_prompt(order_id: int, method: str) -> InlineKeyboardMarkup:
+def ik_discount_choice(order_id: int) -> InlineKeyboardMarkup:
     rows = [
-        [
-            InlineKeyboardButton(
-                text="✅ دارم",
-                callback_data=f"cart:discount:yes:{method}:{order_id}",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="❌ ندارم",
-                callback_data=f"cart:discount:no:{method}:{order_id}",
-            )
-        ],
+        [InlineKeyboardButton(text="✅ دارم", callback_data=f"cart:discount:have:{order_id}")],
+        [InlineKeyboardButton(text="🚫 ندارم", callback_data=f"cart:discount:no:{order_id}")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def ik_discount_code_controls(order_id: int, method: str) -> InlineKeyboardMarkup:
+def ik_discount_code_actions(order_id: int) -> InlineKeyboardMarkup:
     rows = [
-        [
-            InlineKeyboardButton(
-                text="🎯 اعمال",
-                callback_data=f"cart:discount:apply:{method}:{order_id}",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                text="↩️ بازگشت",
-                callback_data=f"cart:discount:cancel:{method}:{order_id}",
-            )
-        ],
+        [InlineKeyboardButton(text="✅ اعمال", callback_data=f"cart:discount:submit:{order_id}")],
+        [InlineKeyboardButton(text="↩️ لغو", callback_data=f"cart:discount:cancel:{order_id}")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

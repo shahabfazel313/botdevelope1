@@ -22,6 +22,20 @@
                 {% endif %}
             </p>
         </div>
+        {% if order.discount_amount %}
+        <div>
+            <strong>تخفیف اعمال‌شده</strong>
+            <p>{{ format_amount(order.discount_amount) }} تومان
+                {% if order.discount_code %}
+                <small class="muted">({{ order.discount_code }})</small>
+                {% endif %}
+            </p>
+        </div>
+        <div>
+            <strong>مبلغ اصلی</strong>
+            <p>{{ format_amount(order.base_amount or (order.amount_total + order.discount_amount)) }} تومان</p>
+        </div>
+        {% endif %}
         <div>
             <strong>وضعیت</strong>
             <p><span class="badge {{ order.status|lower }}">{{ order_status_labels.get(order.status, order.status) }}</span></p>
@@ -143,8 +157,8 @@
 
     {% if order.payment_type == 'FIRST_PLAN' and order.status == 'DELIVERED' %}
     <form method="post" action="{{ url_for('request_first_plan_payment', order_id=order.id) }}" class="form-grid">
-        <p class="span info">پس از تحویل طرح خرید اول، با این دکمه می‌توانید برای دریافت هزینه به مشتری اطلاع دهید.</p>
-        <button type="submit" class="btn-primary">درخواست پرداخت طرح خرید اول</button>
+        <p class="span">پس از تحویل سفارش می‌توانید درخواست پرداخت را برای مشتری ارسال کنید.</p>
+        <button type="submit" class="btn-primary">درخواست پرداخت طرح اول</button>
     </form>
     {% endif %}
 

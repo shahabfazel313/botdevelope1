@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
-from html import escape
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -57,9 +56,12 @@ from ..db import (
     confirm_discount_usage,
     create_coupon,
     create_discount_code,
+    db_execute,
     get_coupon,
     get_discount_code,
     list_coupons,
+    list_discount_code_usages,
+    list_discount_codes,
     list_coupon_redemptions,
     list_discount_codes,
     list_discount_redemptions,
@@ -68,9 +70,10 @@ from ..db import (
     list_order_manager_messages,
     list_user_manager_messages,
     set_order_financials,
-    set_order_payment_deadline,
     update_discount_code,
 )
+from ..keyboards import ik_cart_actions
+from ..public.helpers import _fmt_order_for_user
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = BASE_DIR / "templates"
@@ -656,62 +659,43 @@ def create_admin_app() -> FastAPI:
         return RedirectResponse(request.url_for("order_detail", order_id=order_id), status.HTTP_303_SEE_OTHER)
 
     @app.post("/orders/{order_id}/request-first-plan-payment")
-    async def request_first_plan_payment(request: Request, order_id: int, user: str = Depends(_login_required)):
+    async def request_first_plan_payment(
+        request: Request,
+        order_id: int,
+        user: str = Depends(_login_required),
+    ):
         order = get_order(order_id)
         if not order:
-            _flash(request, "سفارش یافت نشد.", "error")
-            return RedirectResponse(request.url_for("orders_page"), status.HTTP_303_SEE_OTHER)
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="سفارش یافت نشد")
         if (order.get("payment_type") or "") != "FIRST_PLAN":
-            _flash(request, "این سفارش مربوط به طرح خرید اول نیست.", "error")
+            _flash(request, "این سفارش در حالت طرح خرید اول نیست.", "error")
             return RedirectResponse(request.url_for("order_detail", order_id=order_id), status.HTTP_303_SEE_OTHER)
-        if order.get("status") != "DELIVERED":
-            _flash(request, "سفارش هنوز در وضعیت تحویل‌شده نیست.", "error")
+        user_id = order.get("user_id")
+        if not user_id:
+            _flash(request, "برای این سفارش کاربری ثبت نشده است.", "error")
             return RedirectResponse(request.url_for("order_detail", order_id=order_id), status.HTTP_303_SEE_OTHER)
 
         set_order_status(order_id, "AWAITING_PAYMENT")
-        set_order_payment_deadline(order_id, 30)
-        updated = get_order(order_id) or order
-        user_id = updated.get("user_id")
-        if user_id:
-            title = updated.get("plan_title") or updated.get("service_code") or f"سفارش #{order_id}"
-            try:
-                amount_original = int(updated.get("amount_original") or updated.get("amount_total") or 0)
-            except (TypeError, ValueError):
-                amount_original = 0
-            try:
-                discount_amount = int(updated.get("discount_amount") or 0)
-            except (TypeError, ValueError):
-                discount_amount = 0
-            try:
-                amount_total = int(updated.get("amount_total") or 0)
-            except (TypeError, ValueError):
-                amount_total = 0
-            amount_lines = []
-            if discount_amount > 0:
-                amount_lines.append(f"قیمت اولیه: <b>{amount_original} {CURRENCY}</b>")
-                amount_lines.append(f"تخفیف: <b>{discount_amount} {CURRENCY}</b>")
-                amount_lines.append(f"قیمت نهایی: <b>{amount_total} {CURRENCY}</b>")
-            else:
-                amount_lines.append(f"مبلغ: <b>{amount_total} {CURRENCY}</b>")
-            discount_code = (updated.get("discount_code") or "").strip()
-            if discount_code:
-                amount_lines.append(f"کد تخفیف: <code>{escape(discount_code)}</code>")
-            amount_block = "\n".join(amount_lines)
-            text = (
-                "⏰ شما نیم ساعت فرصت دارید برای پرداخت، لطفاً هزینه سفارش خود را پرداخت کنید.\n\n"
-                f"📦 <b>{title}</b>\n"
-                f"شماره سفارش: <code>#{order_id}</code>\n"
-                f"{amount_block}\n\n"
-                "برای ادامه، روش پرداخت را انتخاب کنید:"
-            )
-            enable_plan = False
-            try:
-                await bot.send_message(user_id, text, reply_markup=ik_cart_actions(order_id, enable_plan=enable_plan))
-            except Exception:
-                _flash(request, "ارسال پیام به کاربر ناموفق بود.", "error")
-                return RedirectResponse(request.url_for("order_detail", order_id=order_id), status.HTTP_303_SEE_OTHER)
+        deadline = (datetime.now() + timedelta(minutes=30)).isoformat(timespec="seconds")
+        db_execute("UPDATE orders SET await_deadline=? WHERE id=?", (deadline, order_id))
+        refreshed = get_order(order_id) or order
 
-        _flash(request, "درخواست پرداخت برای مشتری ارسال شد.")
+        message_text = (
+            "⏰ شما نیم ساعت فرصت دارید برای پرداخت، لطفاً هزینه سفارش خود را پرداخت کنید.\n\n"
+            f"{_fmt_order_for_user(refreshed)}\n\n"
+            "برای ادامه، روش پرداخت را انتخاب کنید:"
+        )
+        try:
+            await bot.send_message(
+                user_id,
+                message_text,
+                reply_markup=ik_cart_actions(order_id, enable_plan=False),
+            )
+        except Exception:
+            _flash(request, "ارسال پیام برای کاربر با خطا مواجه شد.", "error")
+        else:
+            _flash(request, "درخواست پرداخت برای مشتری ارسال شد.")
+
         return RedirectResponse(request.url_for("order_detail", order_id=order_id), status.HTTP_303_SEE_OTHER)
 
     @app.get("/users")
@@ -886,39 +870,30 @@ def create_admin_app() -> FastAPI:
 
     @app.get("/discounts")
     async def discounts_page(request: Request, user: str = Depends(_login_required)):
-        rows = list_admin_rows()
-        product_variants: list[dict[str, Any]] = []
-        product_map: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            group_title = row.get("title") or row.get("code")
+        products_source = list_admin_rows()
+        variant_labels: dict[str, str] = {}
+        products: list[dict[str, Any]] = []
+        for row in products_source:
+            group_title = row.get("title", "")
             for variant in row.get("variants", []):
                 code = variant.get("code")
-                amount_value = 0
-                try:
-                    amount_value = int(variant.get("amount") or 0)
-                except (TypeError, ValueError):
-                    amount_value = 0
-                product_variants.append(
+                if not code:
+                    continue
+                label = f"{group_title} — {variant.get('display_name', code)}"
+                variant_labels[code] = label
+                products.append(
                     {
                         "group": group_title,
                         "code": code,
-                        "display_name": variant.get("display_name") or code,
-                        "price": amount_value,
+                        "display_name": variant.get("display_name", code),
+                        "amount": variant.get("amount"),
+                        "available": variant.get("available"),
                     }
                 )
-                product_map[code] = {
-                    "display_name": variant.get("display_name") or code,
-                    "group": group_title,
-                }
 
-        discounts = list_discount_codes(limit=200)
+        codes = list_discount_codes(limit=200)
         now_dt = datetime.now()
-        redemption_status_labels = {
-            "RESERVED": "رزرو شده",
-            "CONFIRMED": "تایید شده",
-            "CANCELED": "لغو شده",
-        }
-        for item in discounts:
+        for item in codes:
             try:
                 item["amount"] = int(item.get("amount") or 0)
             except (TypeError, ValueError):
@@ -931,39 +906,141 @@ def create_admin_app() -> FastAPI:
                 item["used_count"] = int(item.get("used_count") or 0)
             except (TypeError, ValueError):
                 item["used_count"] = 0
-            expires_raw = item.get("expires_at")
-            item["expires_value"] = ""
-            item["expires_time_value"] = ""
-            item["is_expired"] = False
-            if expires_raw:
+            expires_at = item.get("expires_at")
+            expires_value = ""
+            is_expired = False
+            if expires_at:
                 try:
-                    dt = datetime.fromisoformat(str(expires_raw))
-                    item["expires_value"] = dt.strftime("%Y-%m-%d")
-                    item["expires_time_value"] = dt.strftime("%H:%M")
-                    item["is_expired"] = dt < now_dt
-                except Exception:
-                    pass
-            redemptions = list_discount_redemptions(item.get("id")) if item.get("id") else []
-            item["redemptions"] = redemptions
-            item["active_reservations"] = sum(1 for r in redemptions if (r.get("status") or "").upper() == "RESERVED")
-            meta = product_map.get(item.get("product_code")) or {}
-            item["product_title"] = meta.get("display_name") or item.get("product_code")
-            item["product_group"] = meta.get("group")
+                    exp_dt = datetime.fromisoformat(str(expires_at))
+                    expires_value = exp_dt.strftime("%Y-%m-%d")
+                    is_expired = exp_dt < now_dt
+                except ValueError:
+                    expires_value = str(expires_at)[:10]
+            item["expires_value"] = expires_value
+            item["is_expired"] = is_expired
+            item["is_active"] = bool(item.get("is_active"))
+            item["product_label"] = variant_labels.get(item.get("product_code"), item.get("product_code"))
+            usages = list_discount_code_usages(item.get("id")) if item.get("id") else []
+            item["usages"] = usages
+            item["used_users"] = [row.get("user_id") for row in usages if row.get("user_id") is not None]
 
         return _render(
             request,
             "discounts.html",
             {
-                "title": "کدهای تخفیف",
-                "product_variants": product_variants,
-                "discounts": discounts,
+                "title": "کدهای تخفیف محصولات",
+                "products": products,
+                "discounts": codes,
                 "format_amount": _format_amount,
                 "format_datetime": _format_datetime,
-                "status_labels": redemption_status_labels,
-                "currency": CURRENCY,
                 "nav": "discounts",
             },
         )
+
+    @app.post("/discounts/create")
+    async def discount_create(
+        request: Request,
+        user: str = Depends(_login_required),
+        product_code: str = Form(...),
+        code: str = Form(""),
+        title: str = Form(""),
+        amount: int = Form(...),
+        usage_limit: int = Form(...),
+        expires_on: str = Form(""),
+    ):
+        normalized_product = (product_code or "").strip()
+        if not normalized_product:
+            _flash(request, "محصول معتبر نیست.", "error")
+            return RedirectResponse(request.url_for("discounts_page"), status.HTTP_303_SEE_OTHER)
+
+        try:
+            amount_int = int(amount)
+            limit_int = int(usage_limit)
+        except (TypeError, ValueError):
+            _flash(request, "مقادیر عددی نامعتبر هستند.", "error")
+            return RedirectResponse(request.url_for("discounts_page"), status.HTTP_303_SEE_OTHER)
+        if amount_int <= 0 or limit_int <= 0:
+            _flash(request, "مبلغ و تعداد باید بیشتر از صفر باشند.", "error")
+            return RedirectResponse(request.url_for("discounts_page"), status.HTTP_303_SEE_OTHER)
+
+        expires_at: str | None = None
+        expires_input = (expires_on or "").strip()
+        if expires_input:
+            expires_at = f"{expires_input}T23:59:59"
+
+        try:
+            create_discount_code(normalized_product, code, title, amount_int, limit_int, expires_at)
+        except sqlite3.IntegrityError:
+            _flash(request, "کد وارد شده تکراری است.", "error")
+        except ValueError as exc:
+            _flash(request, str(exc), "error")
+        else:
+            _flash(request, "کد تخفیف جدید ثبت شد.")
+
+        return RedirectResponse(request.url_for("discounts_page"), status.HTTP_303_SEE_OTHER)
+
+    @app.post("/discounts/{discount_id}/update")
+    async def discount_update(
+        request: Request,
+        discount_id: int,
+        user: str = Depends(_login_required),
+        code: str = Form(...),
+        title: str = Form(""),
+        amount: int = Form(...),
+        usage_limit: int = Form(...),
+        expires_on: str = Form(""),
+    ):
+        discount = get_discount_code(discount_id)
+        if not discount:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="کد تخفیف یافت نشد")
+
+        try:
+            amount_int = int(amount)
+            limit_int = int(usage_limit)
+        except (TypeError, ValueError):
+            _flash(request, "مقادیر عددی نامعتبر هستند.", "error")
+            return RedirectResponse(request.url_for("discounts_page"), status.HTTP_303_SEE_OTHER)
+        if amount_int <= 0 or limit_int <= 0:
+            _flash(request, "مبالغ یا تعداد معتبر نیست.", "error")
+            return RedirectResponse(request.url_for("discounts_page"), status.HTTP_303_SEE_OTHER)
+
+        expires_at: str | None = None
+        expires_input = (expires_on or "").strip()
+        if expires_input:
+            expires_at = f"{expires_input}T23:59:59"
+
+        try:
+            update_discount_code(
+                discount_id,
+                code=code,
+                title=title,
+                amount=amount_int,
+                usage_limit=limit_int,
+                expires_at=expires_at,
+            )
+        except sqlite3.IntegrityError:
+            _flash(request, "کد دیگری با این مقدار وجود دارد.", "error")
+        except ValueError as exc:
+            _flash(request, str(exc), "error")
+        else:
+            _flash(request, "اطلاعات کد تخفیف بروزرسانی شد.")
+
+        return RedirectResponse(request.url_for("discounts_page"), status.HTTP_303_SEE_OTHER)
+
+    @app.post("/discounts/{discount_id}/toggle")
+    async def discount_toggle(
+        request: Request,
+        discount_id: int,
+        user: str = Depends(_login_required),
+    ):
+        discount = get_discount_code(discount_id)
+        if not discount:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="کد تخفیف یافت نشد")
+        is_active = bool(discount.get("is_active"))
+        set_discount_code_active(discount_id, not is_active)
+        state_text = "فعال" if not is_active else "غیرفعال"
+        _flash(request, f"کد {discount.get('code')} {state_text} شد.")
+        return RedirectResponse(request.url_for("discounts_page"), status.HTTP_303_SEE_OTHER)
 
     @app.get("/coupons")
     async def coupons_page(request: Request, user: str = Depends(_login_required)):

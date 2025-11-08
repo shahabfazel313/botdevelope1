@@ -3,8 +3,32 @@ from contextlib import closing
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 
-from .catalog import AI_VARIANT_MAP, TG_PREMIUM_VARIANTS
 from .config import DB_PATH, ORDER_ID_MIN_VALUE, PAYMENT_TIMEOUT_MIN
+
+PRODUCT_CODE_MAP: dict[tuple[str, str, str], str] = {
+    ("AI", "team", "MY_ACCOUNT"): "gpt_team_my",
+    ("AI", "team", "PREBUILT"): "gpt_team_pre",
+    ("AI", "plus", "MY_ACCOUNT"): "gpt_plus_my",
+    ("AI", "plus", "PREBUILT"): "gpt_plus_pre",
+    ("AI", "google", "MY_ACCOUNT"): "google_pro_my",
+    ("AI", "google", "PREBUILT"): "google_pro_pre",
+    ("TG", "premium_3m", ""): "tg_premium_3m",
+    ("TG", "premium_6m", ""): "tg_premium_6m",
+    ("TG", "premium_12m", ""): "tg_premium_12m",
+    ("TG", "ready_pre", "PREBUILT"): "tg_ready_pre",
+    ("TG", "ready_pre", ""): "tg_ready_pre",
+}
+
+
+def _order_product_code(order: dict[str, Any]) -> str | None:
+    category = (order.get("service_category") or "").upper()
+    code = (order.get("service_code") or "").strip()
+    mode = (order.get("account_mode") or "").upper()
+    key = (category, code, mode)
+    if key in PRODUCT_CODE_MAP:
+        return PRODUCT_CODE_MAP[key]
+    fallback = (category, code, "")
+    return PRODUCT_CODE_MAP.get(fallback)
 
 def _connect():
     con = sqlite3.connect(DB_PATH)
@@ -161,11 +185,12 @@ def init_db():
             ("orders", "manager_note", "TEXT"),
             ("orders", "internal_cost", "INTEGER DEFAULT 0"),
             ("orders", "net_revenue", "INTEGER DEFAULT 0"),
-            ("orders", "amount_original", "INTEGER DEFAULT 0"),
-            ("orders", "discount_code_id", "INTEGER"),
             ("orders", "discount_code", "TEXT"),
-            ("orders", "discount_title", "TEXT"),
+            ("orders", "discount_product_code", "TEXT"),
             ("orders", "discount_amount", "INTEGER DEFAULT 0"),
+            ("orders", "discount_applied_at", "TEXT"),
+            ("orders", "base_amount", "INTEGER DEFAULT 0"),
+            ("orders", "first_plan_flag", "INTEGER DEFAULT 0"),
             ("users", "contact_phone", "TEXT"),
             ("users", "contact_verified", "INTEGER DEFAULT 0"),
             ("users", "contact_shared_at", "TEXT"),
@@ -291,39 +316,39 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_coupon_redemptions_user ON coupon_redemptions(user_id);"
         )
 
-        # discount codes
+        # discount codes per product
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS discount_codes(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 product_code TEXT NOT NULL,
-                code TEXT UNIQUE NOT NULL,
+                code TEXT NOT NULL,
                 title TEXT,
                 amount INTEGER NOT NULL,
                 usage_limit INTEGER NOT NULL,
                 used_count INTEGER DEFAULT 0,
-                per_user_limit INTEGER DEFAULT 1,
                 is_active INTEGER DEFAULT 1,
                 expires_at TEXT,
                 created_at TEXT,
-                updated_at TEXT
+                updated_at TEXT,
+                UNIQUE(product_code, code)
             );
             """
         )
         cur.execute(
             """
-            CREATE TABLE IF NOT EXISTS discount_redemptions(
+            CREATE TABLE IF NOT EXISTS discount_code_usages(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                discount_id INTEGER NOT NULL,
+                discount_code_id INTEGER NOT NULL,
                 order_id INTEGER,
                 user_id INTEGER NOT NULL,
                 amount INTEGER NOT NULL,
                 status TEXT NOT NULL,
                 created_at TEXT,
                 updated_at TEXT,
-                confirmed_at TEXT,
-                UNIQUE(discount_id, user_id),
-                FOREIGN KEY(discount_id) REFERENCES discount_codes(id) ON DELETE CASCADE
+                UNIQUE(discount_code_id, user_id),
+                FOREIGN KEY(discount_code_id) REFERENCES discount_codes(id) ON DELETE CASCADE,
+                FOREIGN KEY(order_id) REFERENCES orders(id) ON DELETE SET NULL
             );
             """
         )
@@ -331,10 +356,16 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_discount_codes_product ON discount_codes(product_code);"
         )
         cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_discount_redemptions_discount ON discount_redemptions(discount_id);"
+            "CREATE INDEX IF NOT EXISTS idx_discount_codes_active ON discount_codes(is_active);"
         )
         cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_discount_redemptions_user ON discount_redemptions(user_id);"
+            "CREATE INDEX IF NOT EXISTS idx_discount_usage_code ON discount_code_usages(discount_code_id);"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_discount_usage_user ON discount_code_usages(user_id);"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_discount_usage_order ON discount_code_usages(order_id);"
         )
         con.commit()
 
@@ -407,7 +438,7 @@ def create_order(
             user_id, username, first_name,
             plan_id, plan_title, price,
             status, created_at, updated_at,
-            amount_total, amount_original, currency, service_category, service_code,
+            amount_total, base_amount, currency, service_category, service_code,
             account_mode, customer_email, notes,
             customer_secret_encrypted
         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -433,6 +464,12 @@ def set_order_receipt(order_id: int, file_id: str | None, text: str | None):
 
 def set_order_payment_type(order_id: int, ptype: str):
     db_execute("UPDATE orders SET payment_type=?, updated_at=? WHERE id=?", (ptype, datetime.now().isoformat(timespec="seconds"), order_id))
+
+def set_order_first_plan_flag(order_id: int, flag: bool):
+    db_execute(
+        "UPDATE orders SET first_plan_flag=?, updated_at=? WHERE id=?",
+        (1 if flag else 0, datetime.now().isoformat(timespec="seconds"), order_id),
+    )
 
 def set_order_wallet_reserved(order_id: int, amount: int):
     db_execute("UPDATE orders SET wallet_reserved_amount=?, updated_at=? WHERE id=?", (amount, datetime.now().isoformat(timespec="seconds"), order_id))
@@ -531,7 +568,10 @@ def user_has_delivered_order(user_id: int) -> bool:
     row = db_execute(
         """
         SELECT 1 FROM orders
-        WHERE user_id=? AND status IN ('DELIVERED','COMPLETED')
+        WHERE user_id=? AND (
+            status IN ('DELIVERED','COMPLETED')
+            OR first_plan_flag=1
+        )
         LIMIT 1
         """,
         (user_id,),
@@ -730,79 +770,60 @@ def redeem_coupon(user_id: int, code: str) -> tuple[bool, dict[str, Any] | None,
     return True, {"amount": amount, "balance": balance, "code": coupon["code"]}, None
 
 
-# ====== Discount codes ======
-def _resolve_order_product_code(order: dict[str, Any]) -> str | None:
-    category = (order.get("service_category") or "").upper()
-    code = (order.get("service_code") or "").lower()
-    if category == "AI":
-        mapping = AI_VARIANT_MAP.get(code)
-        if not mapping:
-            return None
-        mode = (order.get("account_mode") or "").upper()
-        if mode == "MY_ACCOUNT":
-            return mapping.get("my")
-        if mode == "PREBUILT":
-            return mapping.get("pre")
-        return None
-    if category == "TG":
-        if code.startswith("premium_"):
-            period = code.split("_", 1)[1]
-            return TG_PREMIUM_VARIANTS.get(period)
-        if code == "ready_pre":
-            return "tg_ready_pre"
-    return None
+# ====== Discount Codes ======
+
+def _discount_usage_count(discount_id: int, include_canceled: bool = False) -> int:
+    where = "discount_code_id=?"
+    params = [discount_id]
+    if not include_canceled:
+        where += " AND status!='CANCELED'"
+    row = db_execute(
+        f"SELECT COUNT(*) AS c FROM discount_code_usages WHERE {where}",
+        tuple(params),
+        fetchone=True,
+    )
+    return int(row["c"] if row else 0)
+
+
+def _refresh_discount_usage_count(discount_id: int) -> int:
+    count = _discount_usage_count(discount_id)
+    db_execute(
+        "UPDATE discount_codes SET used_count=?, updated_at=? WHERE id=?",
+        (count, datetime.now().isoformat(timespec="seconds"), discount_id),
+    )
+    return count
 
 
 def create_discount_code(
     product_code: str,
     code: str,
+    title: str | None,
     amount: int,
     usage_limit: int,
-    *,
-    title: str | None = None,
     expires_at: str | None = None,
-    per_user_limit: int = 1,
 ) -> int:
     now = datetime.now().isoformat(timespec="seconds")
     normalized_code = (code or "").strip().upper()
-    if not normalized_code:
-        raise ValueError("کد تخفیف نمی‌تواند خالی باشد")
-    product_code = (product_code or "").strip()
-    if not product_code:
-        raise ValueError("شناسه محصول الزامی است")
-    try:
-        amount_value = int(amount)
-    except (TypeError, ValueError):
-        amount_value = 0
-    if amount_value <= 0:
-        raise ValueError("مبلغ تخفیف باید بیشتر از صفر باشد")
-    try:
-        usage_value = int(usage_limit)
-    except (TypeError, ValueError):
-        usage_value = 0
-    if usage_value <= 0:
-        raise ValueError("تعداد قابل استفاده باید حداقل ۱ باشد")
-    try:
-        per_user_value = int(per_user_limit or 1)
-    except (TypeError, ValueError):
-        per_user_value = 1
-    if per_user_value <= 0:
-        per_user_value = 1
+    normalized_product = (product_code or "").strip()
+    if not normalized_code or not normalized_product:
+        raise ValueError("کد تخفیف یا محصول نامعتبر است.")
+    if amount <= 0 or usage_limit <= 0:
+        raise ValueError("مقادیر کد تخفیف معتبر نیست.")
     return db_execute(
         """
         INSERT INTO discount_codes(
-            product_code, code, title, amount, usage_limit,
-            used_count, per_user_limit, is_active, expires_at, created_at, updated_at
-        ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            product_code, code, title,
+            amount, usage_limit, used_count,
+            is_active, expires_at, created_at, updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?)
         """,
         (
-            product_code,
+            normalized_product,
             normalized_code,
             (title or "").strip(),
-            amount_value,
-            usage_value,
+            int(amount),
+            int(usage_limit),
             0,
-            per_user_value,
             1,
             expires_at,
             now,
@@ -815,55 +836,55 @@ def create_discount_code(
 def update_discount_code(
     discount_id: int,
     *,
-    product_code: str,
     code: str,
     title: str | None,
     amount: int,
     usage_limit: int,
     expires_at: str | None,
+    is_active: bool | None = None,
 ) -> bool:
-    discount = get_discount_code(discount_id)
-    if not discount:
+    current = get_discount_code(discount_id)
+    if not current:
         return False
-    used_count = int(discount.get("used_count") or 0)
-    try:
-        usage_value = int(usage_limit)
-    except (TypeError, ValueError):
-        usage_value = 0
-    if usage_value <= 0:
-        raise ValueError("تعداد قابل استفاده باید حداقل ۱ باشد")
-    if usage_value < used_count:
-        raise ValueError("تعداد استفاده نمی‌تواند کمتر از مقدار مصرف‌شده باشد")
-    try:
-        amount_value = int(amount)
-    except (TypeError, ValueError):
-        amount_value = 0
-    if amount_value <= 0:
-        raise ValueError("مبلغ تخفیف باید بیشتر از صفر باشد")
     normalized_code = (code or "").strip().upper()
     if not normalized_code:
-        raise ValueError("کد تخفیف نمی‌تواند خالی باشد")
-    product_code = (product_code or "").strip()
-    if not product_code:
-        raise ValueError("شناسه محصول الزامی است")
+        raise ValueError("کد تخفیف نمی‌تواند خالی باشد.")
+    try:
+        amount_int = int(amount)
+        limit_int = int(usage_limit)
+    except (TypeError, ValueError):
+        raise ValueError("مقادیر عددی نامعتبر هستند.") from None
+    if amount_int <= 0 or limit_int <= 0:
+        raise ValueError("مقادیر باید بیشتر از صفر باشند.")
+    used = _discount_usage_count(discount_id)
+    if limit_int < used:
+        raise ValueError("تعداد مجاز کمتر از تعداد استفاده شده است.")
     now = datetime.now().isoformat(timespec="seconds")
+    updates = [
+        "code=?",
+        "title=?",
+        "amount=?",
+        "usage_limit=?",
+        "expires_at=?",
+        "updated_at=?",
+    ]
+    params: list[Any] = [
+        normalized_code,
+        (title or "").strip(),
+        amount_int,
+        limit_int,
+        expires_at,
+        now,
+    ]
+    if is_active is not None:
+        updates.append("is_active=?")
+        params.append(1 if bool(is_active) else 0)
+    params.append(discount_id)
     db_execute(
-        """
-        UPDATE discount_codes
-        SET product_code=?, code=?, title=?, amount=?, usage_limit=?, expires_at=?, updated_at=?
-        WHERE id=?
-        """,
-        (
-            product_code,
-            normalized_code,
-            (title or "").strip(),
-            amount_value,
-            usage_value,
-            expires_at,
-            now,
-            discount_id,
-        ),
+        f"UPDATE discount_codes SET {', '.join(updates)} WHERE id=?",
+        tuple(params),
     )
+    _refresh_discount_usage_count(discount_id)
     return True
 
 
@@ -878,268 +899,186 @@ def set_discount_code_active(discount_id: int, active: bool) -> None:
 def list_discount_codes(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
     rows = db_execute(
         """
-        SELECT * FROM discount_codes
+        SELECT dc.*, (
+            SELECT COUNT(*) FROM discount_code_usages u
+            WHERE u.discount_code_id=dc.id AND u.status!='CANCELED'
+        ) AS usage_total
+        FROM discount_codes dc
         ORDER BY created_at DESC
         LIMIT ? OFFSET ?
         """,
         (limit, offset),
         fetchall=True,
-    )
-    return rows or []
+    ) or []
+    for row in rows:
+        row["used_count"] = int(row.get("usage_total") or 0)
+        row.pop("usage_total", None)
+        if not row.get("expires_at"):
+            row["expires_at"] = None
+        row["is_active"] = bool(int(row.get("is_active") or 0))
+    return rows
 
 
 def get_discount_code(discount_id: int):
-    return db_execute(
-        "SELECT * FROM discount_codes WHERE id=?",
-        (discount_id,),
-        fetchone=True,
-    )
-
-
-def get_discount_code_by_code(code: str):
-    normalized = (code or "").strip().upper()
-    if not normalized:
+    row = db_execute("SELECT * FROM discount_codes WHERE id=?", (discount_id,), fetchone=True)
+    if not row:
         return None
-    return db_execute(
-        "SELECT * FROM discount_codes WHERE UPPER(code)=?",
-        (normalized,),
+    row["used_count"] = _discount_usage_count(discount_id)
+    if not row.get("expires_at"):
+        row["expires_at"] = None
+    row["is_active"] = bool(int(row.get("is_active") or 0))
+    return row
+
+
+def get_discount_code_by_code(product_code: str, code: str):
+    normalized_code = (code or "").strip().upper()
+    normalized_product = (product_code or "").strip()
+    if not normalized_code or not normalized_product:
+        return None
+    row = db_execute(
+        "SELECT * FROM discount_codes WHERE product_code=? AND UPPER(code)=?",
+        (normalized_product, normalized_code),
         fetchone=True,
     )
+    if row:
+        row["used_count"] = _discount_usage_count(row["id"])
+        if not row.get("expires_at"):
+            row["expires_at"] = None
+        row["is_active"] = bool(int(row.get("is_active") or 0))
+    return row
 
 
-def list_discount_redemptions(discount_id: int) -> list[dict[str, Any]]:
+def list_discount_code_usages(discount_id: int) -> list[dict[str, Any]]:
     return db_execute(
         """
-        SELECT * FROM discount_redemptions
-        WHERE discount_id=?
+        SELECT id, user_id, order_id, amount, status, created_at, updated_at
+        FROM discount_code_usages
+        WHERE discount_code_id=?
         ORDER BY created_at DESC
         """,
         (discount_id,),
         fetchall=True,
-    )
+    ) or []
 
 
-def _get_discount_redemption(discount_id: int, user_id: int):
-    return db_execute(
-        "SELECT * FROM discount_redemptions WHERE discount_id=? AND user_id=?",
-        (discount_id, user_id),
-        fetchone=True,
-    )
-
-
-def apply_discount_to_order(
+def apply_discount_code_to_order(
     order_id: int,
     user_id: int,
     code: str,
 ) -> tuple[bool, dict[str, Any] | None, str | None]:
     order = get_order(order_id)
-    if not order or int(order.get("user_id") or 0) != int(user_id):
+    if not order:
         return False, None, "سفارش یافت نشد."
+    if int(order.get("user_id") or 0) != int(user_id):
+        return False, None, "دسترسی به این سفارش مجاز نیست."
     if (order.get("status") or "") != "AWAITING_PAYMENT":
-        return False, None, "این سفارش قابل ویرایش نیست."
-    if int(order.get("discount_code_id") or 0):
-        return False, None, "برای این سفارش قبلاً تخفیف ثبت شده است."
-    product_code = _resolve_order_product_code(order)
+        return False, None, "در حال حاضر امکان اعمال تخفیف روی این سفارش وجود ندارد."
+    if (order.get("payment_type") or "") == "FIRST_PLAN":
+        return False, None, "این سفارش با طرح خرید اول مدیریت می‌شود."
+    if (order.get("discount_code") or "").strip():
+        return False, None, "برای این سفارش قبلاً کد تخفیف ثبت شده است."
+    reserved = int(order.get("wallet_reserved_amount") or 0)
+    used_wallet = int(order.get("wallet_used_amount") or 0)
+    if reserved > 0 or used_wallet > 0:
+        return False, None, "پس از شروع پرداخت امکان اعمال تخفیف نیست."
+    product_code = _order_product_code(order)
     if not product_code:
-        return False, None, "برای این سفارش امکان اعمال کد تخفیف وجود ندارد."
+        return False, None, "برای این محصول کد تخفیف پشتیبانی نمی‌شود."
 
-    discount = get_discount_code_by_code(code)
-    if not discount or (discount.get("product_code") or "") != product_code:
-        return False, None, "کد تخفیف نامعتبر است."
-    if not bool(discount.get("is_active")):
+    discount = get_discount_code_by_code(product_code, code)
+    if not discount:
+        return False, None, "کد تخفیف یافت نشد."
+    if not discount.get("is_active"):
         return False, None, "این کد تخفیف غیرفعال شده است."
-
-    expires_at = discount.get("expires_at")
-    if expires_at:
-        try:
-            expires_dt = datetime.fromisoformat(str(expires_at))
-            if expires_dt < datetime.now():
-                return False, None, "کد تخفیف منقضی شده است."
-        except Exception:
-            pass
-
-    try:
-        usage_limit = int(discount.get("usage_limit") or 0)
-    except (TypeError, ValueError):
-        usage_limit = 0
-    try:
-        used_count = int(discount.get("used_count") or 0)
-    except (TypeError, ValueError):
-        used_count = 0
-
-    active_count_row = db_execute(
-        """
-        SELECT COUNT(1) AS c
-        FROM discount_redemptions
-        WHERE discount_id=? AND status IN ('RESERVED','CONFIRMED')
-        """,
-        (discount["id"],),
-        fetchone=True,
-    )
-    active_count = int((active_count_row or {}).get("c") or 0)
-    redemption = _get_discount_redemption(discount["id"], user_id)
-    redemption_status = (redemption or {}).get("status") or ""
-    if redemption and redemption_status == "CONFIRMED":
-        return False, None, "این کد تخفیف قبلاً استفاده شده است."
-    if usage_limit > 0 and active_count >= usage_limit and redemption_status != "RESERVED":
-        return False, None, "ظرفیت این کد تخفیف تکمیل شده است."
-
-    try:
-        per_user_limit = int(discount.get("per_user_limit") or 1)
-    except (TypeError, ValueError):
-        per_user_limit = 1
-    if per_user_limit <= 0:
-        per_user_limit = 1
-    if redemption and redemption_status not in {"RESERVED", "CANCELED"} and per_user_limit == 1:
-        return False, None, "شما قبلاً از این کد تخفیف استفاده کرده‌اید."
-
     try:
         amount_value = int(discount.get("amount") or 0)
+        limit_value = int(discount.get("usage_limit") or 0)
     except (TypeError, ValueError):
-        amount_value = 0
-    if amount_value <= 0:
-        return False, None, "مبلغ تخفیف معتبر نیست."
+        return False, None, "مقادیر این تخفیف معتبر نیست."
+    if amount_value <= 0 or limit_value <= 0:
+        return False, None, "مقادیر این تخفیف معتبر نیست."
+    if discount.get("expires_at"):
+        try:
+            expire_dt = datetime.fromisoformat(str(discount["expires_at"]))
+            if datetime.now() > expire_dt:
+                return False, None, "تاریخ انقضای این کد گذشته است."
+        except ValueError:
+            pass
+    used_count = _discount_usage_count(discount["id"])
+    if used_count >= limit_value:
+        return False, None, "ظرفیت استفاده از این کد تکمیل شده است."
 
-    try:
-        original_amount = int(order.get("amount_original") or order.get("amount_total") or 0)
-    except (TypeError, ValueError):
-        original_amount = 0
-    if original_amount <= 0:
-        return False, None, "مبلغ سفارش نامعتبر است."
+    base_amount = int(order.get("base_amount") or 0)
+    if base_amount <= 0:
+        base_amount = int(order.get("amount_total") or 0)
+    if base_amount <= 0:
+        return False, None, "مبلغ سفارش معتبر نیست."
 
-    discount_amount = min(amount_value, original_amount)
-    final_amount = max(original_amount - discount_amount, 0)
+    discount_value = min(amount_value, base_amount)
+    new_total = max(base_amount - discount_value, 0)
     now = datetime.now().isoformat(timespec="seconds")
+
     db_execute(
         """
         UPDATE orders
-        SET discount_code_id=?, discount_code=?, discount_title=?,
-            discount_amount=?, amount_total=?, updated_at=?
+        SET base_amount=?, discount_code=?, discount_product_code=?,
+            discount_amount=?, discount_applied_at=?, amount_total=?, updated_at=?
         WHERE id=?
         """,
         (
-            discount["id"],
-            discount.get("code"),
-            (discount.get("title") or ""),
-            discount_amount,
-            final_amount,
+            base_amount,
+            (discount.get("code") or "").strip().upper(),
+            discount.get("product_code") or "",
+            discount_value,
+            now,
+            new_total,
             now,
             order_id,
         ),
     )
 
-    if redemption:
+    try:
         db_execute(
             """
-            UPDATE discount_redemptions
-            SET order_id=?, amount=?, status='RESERVED', updated_at=?
-            WHERE id=?
+            INSERT INTO discount_code_usages(discount_code_id, order_id, user_id, amount, status, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?)
             """,
-            (order_id, discount_amount, now, redemption["id"]),
+            (discount["id"], order_id, user_id, discount_value, "RESERVED", now, now),
         )
-    else:
-        db_execute(
-            """
-            INSERT INTO discount_redemptions(
-                discount_id, order_id, user_id, amount, status, created_at, updated_at
-            ) VALUES(?,?,?,?,?,?,?)
-            """,
-            (discount["id"], order_id, user_id, discount_amount, "RESERVED", now, now),
-        )
+    except sqlite3.IntegrityError:
+        return False, None, "شما قبلاً از این کد استفاده کرده‌اید."
 
-    return True, {
-        "code": discount.get("code"),
+    usage_total = _refresh_discount_usage_count(discount["id"])
+
+    refreshed_order = get_order(order_id)
+    result = {
+        "discount_amount": discount_value,
+        "new_total": new_total,
+        "code": discount.get("code") or "",
         "title": discount.get("title") or "",
-        "amount": discount_amount,
-        "final_amount": final_amount,
-    }, None
+        "product_code": discount.get("product_code") or "",
+        "usage_total": usage_total,
+    }
+    if refreshed_order:
+        result["order"] = refreshed_order
+    return True, result, None
 
 
-def confirm_discount_usage(order_id: int) -> None:
-    order = get_order(order_id)
-    if not order:
-        return
-    discount_id = order.get("discount_code_id")
-    if not discount_id:
-        return
-    user_id = order.get("user_id")
-    if not user_id:
-        return
-    redemption = _get_discount_redemption(int(discount_id), int(user_id))
-    if not redemption:
-        return
-    if redemption.get("status") == "CONFIRMED":
+def set_discount_usage_status(order_id: int, status: str) -> None:
+    rows = db_execute(
+        "SELECT id, discount_code_id FROM discount_code_usages WHERE order_id=?",
+        (order_id,),
+        fetchall=True,
+    ) or []
+    if not rows:
         return
     now = datetime.now().isoformat(timespec="seconds")
-    db_execute(
-        """
-        UPDATE discount_redemptions
-        SET status='CONFIRMED', confirmed_at=?, updated_at=?, order_id=?
-        WHERE id=?
-        """,
-        (now, now, order_id, redemption["id"]),
-    )
-    db_execute(
-        "UPDATE discount_codes SET used_count=used_count+1, updated_at=? WHERE id=?",
-        (now, discount_id),
-    )
-
-
-def cancel_discount_usage(order_id: int, *, reset_order: bool = False) -> None:
-    order = get_order(order_id)
-    if not order:
-        return
-    discount_id = order.get("discount_code_id")
-    if not discount_id:
-        return
-    user_id = order.get("user_id")
-    if not user_id:
-        return
-    redemption = _get_discount_redemption(int(discount_id), int(user_id))
-    if not redemption:
-        if reset_order:
-            now = datetime.now().isoformat(timespec="seconds")
-            db_execute(
-                """
-                UPDATE orders
-                SET discount_code_id=NULL, discount_code=NULL, discount_title=NULL,
-                    discount_amount=0, amount_total=amount_original, updated_at=?
-                WHERE id=?
-                """,
-                (now, order_id),
-            )
-        return
-    if redemption.get("status") == "CONFIRMED":
-        return
-    now = datetime.now().isoformat(timespec="seconds")
-    db_execute(
-        """
-        UPDATE discount_redemptions
-        SET status='CANCELED', updated_at=?, order_id=?
-        WHERE id=?
-        """,
-        (now, order_id, redemption["id"]),
-    )
-    if reset_order:
+    for row in rows:
         db_execute(
-            """
-            UPDATE orders
-            SET discount_code_id=NULL, discount_code=NULL, discount_title=NULL,
-                discount_amount=0, amount_total=amount_original, updated_at=?
-            WHERE id=?
-            """,
-            (now, order_id),
+            "UPDATE discount_code_usages SET status=?, updated_at=? WHERE id=?",
+            (status, now, row["id"]),
         )
-
-
-def set_order_payment_deadline(order_id: int, minutes: int) -> None:
-    minutes = max(int(minutes or 0), 1)
-    now = datetime.now()
-    deadline = (now + timedelta(minutes=minutes)).isoformat(timespec="seconds")
-    db_execute(
-        "UPDATE orders SET await_deadline=?, updated_at=? WHERE id=?",
-        (deadline, now.isoformat(timespec="seconds"), order_id),
-    )
+        _refresh_discount_usage_count(row["discount_code_id"])
 
 
 # ====== Stats & History ======
